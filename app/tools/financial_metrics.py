@@ -39,6 +39,7 @@ Example 4 — DuPont decomposition:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from typing import Any
@@ -46,6 +47,29 @@ from typing import Any
 from app.tools.base import tool_wrapper
 
 logger = logging.getLogger(__name__)
+
+
+def _unwrap_tool_result(v: Any) -> dict[str, Any]:
+    """
+    Normalise the dict argument that the LLM passes to a compute tool.
+
+    The model sometimes passes:
+      - A plain dict (correct)                    → use as-is
+      - A tool-wrapper envelope {"status": "success", "data": {...}}
+                                                  → return .data
+      - A JSON string of either of the above      → parse then apply above
+    """
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise TypeError(f"Cannot parse argument as JSON: {v[:120]!r}") from exc
+    if isinstance(v, dict):
+        # Unwrap tool_wrapper envelope transparently
+        if v.get("status") in ("success", "error") and "data" in v:
+            return v["data"]  # type: ignore[return-value]
+        return v
+    raise TypeError(f"Expected dict or JSON string, got {type(v).__name__}")
 
 
 def _first_numeric(d: dict[str, Any], *keys: str) -> float | None:
@@ -147,11 +171,14 @@ def compute_valuation_multiples(stock_info: dict[str, Any]) -> dict[str, Any]:
     Parameters
     ----------
     stock_info:
-        Dict returned by get_stock_info().
+        Dict returned by get_stock_info() — pass the full tool result or just
+        the data payload; both are accepted.
 
     Returns dict with: pe_ratio, forward_pe, ev_ebitda, price_to_sales,
     price_to_book, dividend_yield, market_cap_bn, enterprise_value_bn.
     """
+    stock_info = _unwrap_tool_result(stock_info)
+
     def _bn(v: float | None) -> float | None:
         return round(v / 1e9, 2) if v is not None else None
 
@@ -193,10 +220,12 @@ def compute_revenue_growth(income_stmt: dict[str, Any]) -> dict[str, float | Non
     Parameters
     ----------
     income_stmt:
-        Dict returned by get_financials(ticker, 'income', 'annual').
+        Dict returned by get_financials(ticker, 'income', 'annual') — pass the
+        full tool result or just the data payload; both are accepted.
 
     Returns dict {period: yoy_growth_rate | None}; the earliest period has None.
     """
+    income_stmt = _unwrap_tool_result(income_stmt)
     revenue = _extract_series(income_stmt, "Total Revenue")
     periods = sorted(revenue.keys(), reverse=True)  # most recent first
     growth: dict[str, float | None] = {}
@@ -226,10 +255,12 @@ def compute_margin_trends(income_stmt: dict[str, Any]) -> dict[str, Any]:
     Parameters
     ----------
     income_stmt:
-        Dict returned by get_financials(ticker, 'income', 'annual').
+        Dict returned by get_financials(ticker, 'income', 'annual') — pass the
+        full tool result or just the data payload; both are accepted.
 
     Returns dict {period: {gross_margin, operating_margin, net_margin}}.
     """
+    income_stmt = _unwrap_tool_result(income_stmt)
     revenue = _extract_series(income_stmt, "Total Revenue")
     gross_profit = _extract_series(income_stmt, "Gross Profit")
     operating_income = _extract_series(income_stmt, "Operating Income")
@@ -260,8 +291,11 @@ def compute_dupont(
     """
     DuPont decomposition: ROE = Net Profit Margin × Asset Turnover × Equity Multiplier.
 
+    Pass full tool results or just the data payloads; both are accepted.
     Returns the most recent period's decomposed ROE.
     """
+    income_stmt = _unwrap_tool_result(income_stmt)
+    balance_sheet = _unwrap_tool_result(balance_sheet)
     periods_i = sorted(income_stmt.keys(), reverse=True)
     periods_b = sorted(balance_sheet.keys(), reverse=True)
     if not periods_i or not periods_b:
@@ -308,8 +342,11 @@ def compute_altman_z(
       1.81–2.99 → Grey zone
       Z < 1.81  → Distress zone
 
+    Pass full tool results or just the data payloads; both are accepted.
     Returns score, zone, and component ratios.
     """
+    balance_sheet = _unwrap_tool_result(balance_sheet)
+    income_stmt = _unwrap_tool_result(income_stmt)
     periods_b = sorted(balance_sheet.keys(), reverse=True)
     periods_i = sorted(income_stmt.keys(), reverse=True)
     if not periods_b or not periods_i:

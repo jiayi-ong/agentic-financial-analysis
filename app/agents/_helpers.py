@@ -30,6 +30,61 @@ def load_prompt(agent_name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _sanitize_json_strings(text: str) -> str:
+    """
+    Escape literal control characters (newlines, tabs, carriage returns, etc.)
+    that appear inside JSON string values.
+
+    yfinance / SEC filing text embedded in JSON can contain raw ``\\n`` or ``\\t``
+    characters which are illegal inside JSON strings and cause ``json.loads`` to
+    raise ``JSONDecodeError: Expecting ',' delimiter``.
+
+    This scanner tracks ``in_string`` / ``escaped`` state character by character
+    so that it only modifies characters inside string literals, leaving structural
+    JSON syntax untouched.
+    """
+    result: list[str] = []
+    in_string = False
+    escaped = False
+
+    _ESCAPE_MAP = {
+        "\n": "\\n",
+        "\r": "\\r",
+        "\t": "\\t",
+        "\b": "\\b",
+        "\f": "\\f",
+    }
+
+    for ch in text:
+        if escaped:
+            result.append(ch)
+            escaped = False
+            continue
+
+        if ch == "\\" and in_string:
+            result.append(ch)
+            escaped = True
+            continue
+
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+
+        if in_string and ch in _ESCAPE_MAP:
+            result.append(_ESCAPE_MAP[ch])
+            continue
+
+        # Also escape other raw control characters (U+0000–U+001F) inside strings
+        if in_string and ord(ch) < 0x20:
+            result.append(f"\\u{ord(ch):04x}")
+            continue
+
+        result.append(ch)
+
+    return "".join(result)
+
+
 def _extract_json_block(text: str) -> str:
     """
     Extract a JSON object from a text that may contain markdown fences or prose.
@@ -67,6 +122,7 @@ def parse_specialist_output(text: str, specialist_name: str) -> SpecialistOutput
     """
     try:
         raw = _extract_json_block(text)
+        raw = _sanitize_json_strings(raw)
         data = json.loads(raw)
         data.setdefault("specialist", specialist_name)
         return SpecialistOutput.model_validate(data)
@@ -86,6 +142,7 @@ def parse_synthesis_output(text: str) -> SynthesisOutput:
     """Parse an agent's text response into a validated SynthesisOutput."""
     try:
         raw = _extract_json_block(text)
+        raw = _sanitize_json_strings(raw)
         data = json.loads(raw)
         return SynthesisOutput.model_validate(data)
     except Exception as exc:  # noqa: BLE001

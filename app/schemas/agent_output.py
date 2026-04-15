@@ -9,9 +9,8 @@ stores these in the ADK session state under the key
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator  # noqa: F401
 
 
 class EvidenceSnippet(BaseModel):
@@ -19,8 +18,9 @@ class EvidenceSnippet(BaseModel):
 
     text: str = Field(..., description="Verbatim or paraphrased excerpt used as evidence")
     source_url: str | None = Field(None, description="Direct URL to the source article or filing")
-    source_type: Literal["news", "sec_filing", "market_data", "analyst_report"] = Field(
-        ..., description="Category of source"
+    source_type: str = Field(
+        default="market_data",
+        description="Category of source (e.g. news, sec_filing, market_data, analyst_report)",
     )
     filing_identifier: str | None = Field(
         None,

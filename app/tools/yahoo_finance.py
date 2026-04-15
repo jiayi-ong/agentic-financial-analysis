@@ -92,7 +92,18 @@ def get_stock_info(ticker: str) -> dict[str, Any]:
     marketCap, trailingPE, forwardPE, priceToBook, dividendYield,
     fiftyTwoWeekHigh, fiftyTwoWeekLow, longBusinessSummary, website.
     """
-    info = yf.Ticker(ticker.upper()).info
+    try:
+        info = yf.Ticker(ticker.upper()).info
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"yfinance failed to fetch info for {ticker}: {exc}") from exc
+
+    # yfinance can return None or an empty dict on transient Yahoo Finance errors
+    if not info:
+        raise RuntimeError(
+            f"yfinance returned no data for {ticker}. "
+            "Yahoo Finance may be temporarily unavailable — please retry."
+        )
+
     keys = [
         "shortName", "longName", "sector", "industry", "country",
         "marketCap", "enterpriseValue", "trailingPE", "forwardPE",

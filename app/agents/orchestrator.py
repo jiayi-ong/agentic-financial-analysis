@@ -51,6 +51,36 @@ logger = logging.getLogger(__name__)
 
 _APP_NAME = "financial_analyst"
 
+# ── JSON coercion ─────────────────────────────────────────────────────────────
+# When a specialist agent returns prose instead of the required JSON structure,
+# we continue the same ADK session and send this follow-up to force compliance.
+
+_JSON_COERCE_INSTRUCTION = (
+    "Your previous response was not in the required JSON format. "
+    "You MUST now output ONLY a valid JSON object — no prose, no markdown fences, "
+    "no explanation. Use all the data you collected from your tool calls above.\n\n"
+    "The JSON must have exactly these fields:\n"
+    "{\n"
+    '  "specialist": "<your agent name>",\n'
+    '  "claims": ["<concise finding 1>", "<concise finding 2>", ...],\n'
+    '  "evidence": [\n'
+    '    {"text": "...", "source_url": "...", '
+    '"source_type": "news", "filing_identifier": null, '
+    '"extraction_timestamp": "<ISO datetime>"}\n'
+    "  ],\n"
+    '  "confidence": <0.0–1.0>,\n'
+    '  "success": true,\n'
+    '  "failure_reason": null\n'
+    "}\n\n"
+    "Start your response with { and end with }. Output ONLY the JSON."
+)
+
+
+def _looks_like_json(text: str) -> bool:
+    """Return True if *text* appears to be (or contain) a JSON object."""
+    s = text.strip()
+    return bool(s) and (s.startswith("{") or ("```" in s and "{" in s))
+
 
 class FinancialOrchestrator:
     """
@@ -164,7 +194,12 @@ class FinancialOrchestrator:
             if attempt == settings.max_critique_retries:
                 # Max retries exhausted
                 if critique.overall_severity == "high":
-                    return self._format_abstain(ticker, critique)
+                    abstain_text = self._format_abstain(ticker, critique)
+                    await emit(_event(
+                        "abstain", "orchestrator", abstain_text,
+                        payload={"narrative": abstain_text},
+                    ))
+                    return abstain_text
                 break  # Accept even with medium/low issues after max retries
 
             # ── Targeted re-run ───────────────────────────────────────────────
@@ -223,9 +258,19 @@ class FinancialOrchestrator:
                 run_id=f"{session_id}_{name}_{uuid.uuid4().hex[:6]}",
             )
             status = "done" if output.success else "failed"
-            await emit(_event("agent_done", name,
-                              f"[{name}] Analysis {status}. "
-                              f"Confidence: {output.confidence:.0%}"))
+            await emit(_event(
+                "agent_done", name,
+                f"[{name}] Analysis {status}. Confidence: {output.confidence:.0%}",
+                payload={
+                    "success": output.success,
+                    "confidence": output.confidence,
+                    "claims": output.claims,
+                    "evidence": [
+                        json.loads(e.model_dump_json()) for e in output.evidence
+                    ],
+                    "failure_reason": output.failure_reason,
+                },
+            ))
             return name, output
 
         tasks = [_run_one(name, agent) for name, agent in self._specialists.items()]
@@ -259,7 +304,19 @@ class FinancialOrchestrator:
                 user_message=self._specialist_prompt(ticker, user_query),
                 run_id=f"{session_id}_{name}_rerun_{uuid.uuid4().hex[:6]}",
             )
-            await emit(_event("agent_done", name, f"[{name}] Re-run complete."))
+            await emit(_event(
+                "agent_done", name,
+                f"[{name}] Re-run complete. Confidence: {output.confidence:.0%}",
+                payload={
+                    "success": output.success,
+                    "confidence": output.confidence,
+                    "claims": output.claims,
+                    "evidence": [
+                        json.loads(e.model_dump_json()) for e in output.evidence
+                    ],
+                    "failure_reason": output.failure_reason,
+                },
+            ))
             return name, output
 
         results = await asyncio.gather(
@@ -297,7 +354,11 @@ class FinancialOrchestrator:
 
         await emit(_event("synthesis_done", "synthesis_agent",
                           "Synthesis complete.",
-                          payload={"key_hypothesis": synthesis.key_hypothesis}))
+                          payload={
+                              "key_hypothesis": synthesis.key_hypothesis,
+                              "sources": synthesis.sources,
+                              "omitted_specialists": synthesis.omitted_specialists,
+                          }))
         return synthesis
 
     async def _critique(
@@ -414,7 +475,48 @@ class FinancialOrchestrator:
                         if t:
                             text_parts.append(t)
 
-        return "".join(text_parts)
+        raw_text = "".join(text_parts)
+
+        # ── JSON coercion follow-up ───────────────────────────────────────────
+        # If the agent returned prose or nothing instead of JSON, continue the
+        # same session and ask it to reformat.  The model still has all its
+        # tool results in context so it can produce a valid JSON output.
+        if not _looks_like_json(raw_text):
+            logger.info(
+                "Agent %s did not return JSON (len=%d). Sending coercion follow-up.",
+                agent.name, len(raw_text),
+            )
+            coerce_msg = genai_types.Content(
+                role="user",
+                parts=[genai_types.Part(text=_JSON_COERCE_INSTRUCTION)],
+            )
+            coerce_parts: list[str] = []
+            async for event in runner.run_async(
+                user_id="orchestrator",
+                session_id=run_id,
+                new_message=coerce_msg,
+            ):
+                if hasattr(event, "is_final_response") and event.is_final_response():
+                    content = getattr(event, "content", None)
+                    if content:
+                        for part in getattr(content, "parts", []):
+                            t = getattr(part, "text", None)
+                            if t:
+                                coerce_parts.append(t)
+                elif hasattr(event, "content") and event.content:
+                    content = event.content
+                    if getattr(content, "role", "") in ("model", "assistant"):
+                        for part in getattr(content, "parts", []):
+                            t = getattr(part, "text", None)
+                            if t:
+                                coerce_parts.append(t)
+            if coerce_parts:
+                coerced = "".join(coerce_parts)
+                # Only adopt the coercion result if it improved the situation
+                if _looks_like_json(coerced) or len(coerced) > len(raw_text):
+                    raw_text = coerced
+
+        return raw_text
 
     # ─────────────────────────────────────────────────────────────────────────
     # Prompt / context builders

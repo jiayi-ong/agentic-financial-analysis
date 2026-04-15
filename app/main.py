@@ -11,6 +11,13 @@ Static files under /static/ are served from frontend/static/.
 
 from __future__ import annotations
 
+# Load .env into os.environ BEFORE any Google library imports so that
+# GOOGLE_APPLICATION_CREDENTIALS and other Google env vars are visible
+# to the auth library.  pydantic-settings only populates the Settings
+# object; it does NOT call os.environ.update().
+from dotenv import load_dotenv
+load_dotenv(override=False)  # don't overwrite vars already set in the shell
+
 import json
 import logging
 import os
@@ -48,10 +55,23 @@ _FRONTEND = _ROOT / "frontend"
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ANN001
     """Startup / shutdown lifecycle hooks."""
+    # ── Vertex AI / ADK initialisation ───────────────────────────────────────
+    # Tell google-genai to route through Vertex AI (service-account auth) rather
+    # than the direct Gemini API (which requires GOOGLE_API_KEY).
+    # This must be set before the first ADK Runner is created.
+    os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "1")
+
+    import vertexai
+    vertexai.init(
+        project=settings.google_cloud_project,
+        location=settings.google_cloud_location,
+    )
+
     init_tracing(enable_cloud_trace=settings.enable_cloud_trace)
     logger.info(
-        "Financial Analyst starting up | model=%s | location=%s",
+        "Financial Analyst starting up | model=%s | project=%s | location=%s",
         settings.gemini_model,
+        settings.google_cloud_project,
         settings.google_cloud_location,
     )
     yield

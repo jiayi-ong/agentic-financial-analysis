@@ -124,11 +124,29 @@ def parse_specialist_output(text: str, specialist_name: str) -> SpecialistOutput
         "Raw output from '%s' (%d chars): %.2000s",
         specialist_name, len(text), text,
     )
+    if not text or not text.strip():
+        logger.warning(
+            "Empty response from specialist '%s' — returning failure output.",
+            specialist_name,
+        )
+        return SpecialistOutput(
+            specialist=specialist_name,
+            claims=["Specialist returned no output."],
+            evidence=[],
+            confidence=0.0,
+            success=False,
+            failure_reason="EmptyResponse: The agent produced no text output.",
+        )
     try:
         raw = _extract_json_block(text)
         raw = _sanitize_json_strings(raw)
         data = json.loads(raw)
         data.setdefault("specialist", specialist_name)
+        # If the agent correctly returned success=false with a failure_reason but left
+        # claims empty, populate it from failure_reason so Pydantic's min-length (≥1)
+        # constraint is satisfied without discarding the agent's own diagnosis.
+        if not data.get("claims") and data.get("failure_reason"):
+            data["claims"] = [str(data["failure_reason"])[:300]]
         return SpecialistOutput.model_validate(data)
     except Exception as exc:  # noqa: BLE001
         logger.warning(

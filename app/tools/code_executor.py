@@ -50,6 +50,7 @@ Example 3 — blocked import (will return error):
 from __future__ import annotations
 
 import base64
+import contextvars
 import io
 import logging
 import signal
@@ -62,11 +63,60 @@ from typing import Any
 from RestrictedPython import compile_restricted, safe_globals
 from RestrictedPython.Guards import guarded_iter_unpack_sequence, safe_builtins
 
+
+class _PrintCollector:
+    """Minimal PrintCollector compatible with RestrictedPython's compiled output.
+
+    RestrictedPython compiles ``print(x)`` to::
+
+        _print = _print_(_getattr_)   # instantiate
+        _print._call_print(x)         # call
+
+    This class satisfies that contract while forwarding all output to
+    ``sys.stdout``, which is captured by ``redirect_stdout`` in
+    ``execute_python`` so agents' print output ends up in the result.
+    """
+
+    def __init__(self, _getattr_: Any = None) -> None:
+        self._getattr_ = _getattr_
+
+    def write(self, text: str) -> None:
+        """Called by the internal ``print(..., file=self)`` below."""
+        import sys  # sys.stdout is the redirected StringIO at call time
+        sys.stdout.write(text)
+
+    def _call_print(self, *args: Any, **kwargs: Any) -> None:
+        """Entry point produced by RestrictedPython for every print() call."""
+        kwargs.setdefault("file", self)
+        print(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return ""
+
 from app.tools.base import tool_wrapper
 
 logger = logging.getLogger(__name__)
 
 EXEC_TIMEOUT_SECONDS = 30
+
+# ── Per-run figure collector ──────────────────────────────────────────────────
+# The orchestrator registers a list here before starting each agent run.
+# execute_python pushes every captured figure (base64 PNG) into that list so
+# the orchestrator can include them in the final WebSocket payload.
+# ContextVar is used so parallel specialist runs each get an isolated collector.
+_figure_collector: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "execute_python_figure_collector", default=None
+)
+
+
+def set_figure_collector(collector: list[str] | None) -> None:
+    """Register a mutable list that execute_python will push captured figures into.
+
+    Call with a fresh empty list before starting an ADK agent run, and with
+    None after the run completes.  Must be called from the same async task
+    (or thread) that will execute the agent so the ContextVar is in scope.
+    """
+    _figure_collector.set(collector)
 
 # Modules the agent is allowed to import inside the sandbox
 _ALLOWED_MODULES = {
@@ -107,15 +157,33 @@ def _build_restricted_globals(fig_collector: list[str]) -> dict[str, Any]:
 
     restricted_builtins = dict(safe_builtins)
     restricted_builtins["__import__"] = _make_safe_import(_ALLOWED_MODULES)
-    # Allow print
-    restricted_builtins["print"] = print
 
     glb = dict(safe_globals)
     glb["__builtins__"] = restricted_builtins
     glb["_getiter_"] = iter
+    glb["_getitem_"] = lambda obj, key: obj[key]   # subscript / index access
     glb["_getattr_"] = getattr
-    glb["_write_"] = lambda x: x  # allow attribute writes
-    glb["_inplacevar_"] = lambda op, x, y: x  # noqa: ARG005 — allow augmented assignment
+    glb["_write_"] = lambda x: x                   # allow attribute writes
+    # RestrictedPython compiles print(x) → _print_(_getattr_)._call_print(x)
+    glb["_print_"] = _PrintCollector
+    def _inplacevar_(op: str, x: Any, y: Any) -> Any:
+        """Correctly implement in-place operators (+=, -=, etc.) for RestrictedPython."""
+        _ops = {
+            "+=": lambda a, b: a + b,
+            "-=": lambda a, b: a - b,
+            "*=": lambda a, b: a * b,
+            "/=": lambda a, b: a / b,
+            "//=": lambda a, b: a // b,
+            "%=": lambda a, b: a % b,
+            "**=": lambda a, b: a ** b,
+            "&=": lambda a, b: a & b,
+            "|=": lambda a, b: a | b,
+            "^=": lambda a, b: a ^ b,
+        }
+        fn = _ops.get(op)
+        return fn(x, y) if fn is not None else x
+
+    glb["_inplacevar_"] = _inplacevar_
     glb["_iter_unpack_sequence_"] = guarded_iter_unpack_sequence
 
     return glb
@@ -197,6 +265,12 @@ def execute_python(code: str) -> dict[str, Any]:
         _capture_figures(plt, figures)
     except Exception:  # noqa: BLE001
         pass
+
+    # Push captured figures to the orchestrator's per-run collector (if registered)
+    if figures:
+        collector = _figure_collector.get()
+        if collector is not None:
+            collector.extend(figures)
 
     return {
         "stdout": stdout_buf.getvalue(),

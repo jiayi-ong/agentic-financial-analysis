@@ -41,12 +41,12 @@
           autocomplete="off"
           autocapitalize="characters"
         />
-        <input
+        <textarea
           id="queryInput"
-          type="text"
-          placeholder="Optional: focus area (e.g. growth outlook, valuation)"
-          maxlength="200"
-        />
+          placeholder="Optional: focus area or paste any context (e.g. growth outlook, valuation)"
+          maxlength="4000"
+          rows="2"
+        ></textarea>
         <button id="startBtn" class="btn-primary" disabled>Start Analysis</button>
       </div>
       <div id="tickerError" class="ticker-error hidden"></div>

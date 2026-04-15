@@ -146,19 +146,33 @@ startBtn.addEventListener('click', () => {
   // Clear previous analysis
   clearMessages();
   clearSteps();
+  queryInput.style.height = '';  // reset textarea height
   setAnalysisRunning(true);
   setStatus('⏳', `Sending request for ${ticker}...`);
 
-  // Add user bubble
-  addMessage('user', ticker + (queryInput.value.trim() ? ` — ${queryInput.value.trim()}` : ''));
+  // Add user bubble — show the full query text (including the generated default)
+  addMessage('user', ticker + ' — ' + query);
 
   // Send to server
   ws.send(JSON.stringify({ ticker, query }));
 });
 
-// Enter key support
+// Enter on ticker input submits; Shift+Enter on query textarea inserts newline (default),
+// plain Enter on query textarea also submits for convenience.
 tickerInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') startBtn.click();
+});
+queryInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    startBtn.click();
+  }
+});
+
+// Auto-grow textarea as user types
+queryInput.addEventListener('input', () => {
+  queryInput.style.height = 'auto';
+  queryInput.style.height = Math.min(queryInput.scrollHeight, 200) + 'px';
 });
 
 // ── Event router ──────────────────────────────────────────────────────────────
@@ -182,8 +196,8 @@ const EVENT_ICONS = {
 function routeEvent(event) {
   const { event_type, agent_name, message, payload, timestamp } = event;
 
-  // Always add to steps tab
-  addStep(event_type, agent_name, message, timestamp);
+  // Always add to steps tab — pass full payload for rich rendering
+  addStep(event_type, agent_name, message, timestamp, payload);
 
   switch (event_type) {
     case 'session_ready':
@@ -297,7 +311,7 @@ function addAgentMessage(markdown, payload) {
   scrollToBottom(messagesContainer);
 }
 
-function addStep(event_type, agent_name, message, timestamp) {
+function addStep(event_type, agent_name, message, timestamp, payload) {
   // Remove empty placeholder
   if (stepsEmpty && stepsEmpty.parentNode) {
     stepsEmpty.parentNode.removeChild(stepsEmpty);
@@ -309,6 +323,16 @@ function addStep(event_type, agent_name, message, timestamp) {
   const icon = EVENT_ICONS[event_type] || 'ℹ️';
   const time = timestamp ? new Date(timestamp).toLocaleTimeString() : '';
 
+  // Build rich detail panel for specific event types
+  let detailHtml = '';
+  if (event_type === 'agent_done' && payload && payload.claims) {
+    detailHtml = buildSpecialistDetail(payload);
+  } else if (event_type === 'synthesis_done' && payload) {
+    detailHtml = buildSynthesisDetail(payload);
+  } else if (event_type === 'critique_done' && payload && payload.critique) {
+    detailHtml = buildCritiqueDetail(payload.critique);
+  }
+
   const item = document.createElement('div');
   item.className = `step-item step-${event_type}`;
   item.innerHTML = `
@@ -319,14 +343,143 @@ function addStep(event_type, agent_name, message, timestamp) {
         ${time ? `<span class="step-time">${time}</span>` : ''}
       </div>
       <div class="step-message">${escapeHtml(message)}</div>
+      ${detailHtml ? `<details class="step-detail"><summary>View details</summary><div class="step-detail-content">${detailHtml}</div></details>` : ''}
     </div>
   `;
   stepsContainer.appendChild(item);
   scrollToBottom(stepsContainer);
 }
 
+// ── Rich detail builders ──────────────────────────────────────────────────────
+
+/** Returns a safe http/https URL or null. */
+function safeUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  return (url.startsWith('http://') || url.startsWith('https://')) ? url : null;
+}
+
+/** Returns a short human-readable label for a URL (hostname only). */
+function urlLabel(url) {
+  try {
+    const hostname = new URL(url).hostname.replace(/^www\./, '');
+    return hostname + ' \u2197'; // ↗ external-link symbol
+  } catch {
+    return url.length > 50 ? url.slice(0, 50) + '\u2026' : url;
+  }
+}
+
+function buildSpecialistDetail(payload) {
+  const pct = payload.confidence !== undefined ? Math.round(payload.confidence * 100) : 0;
+  const confColor = pct >= 70 ? 'var(--success)' : pct >= 40 ? 'var(--warning)' : 'var(--danger)';
+
+  let html = '';
+
+  // Confidence
+  html += `<div class="step-dl-row">
+    <span class="step-dl-label">Confidence</span>
+    <div class="step-conf-bar"><div class="step-conf-fill" style="width:${pct}%;background:${confColor}"></div></div>
+    <span class="step-conf-pct" style="color:${confColor}">${pct}%</span>
+  </div>`;
+
+  // Claims
+  if (payload.claims && payload.claims.length > 0) {
+    html += `<div class="step-dl-label">Key Claims</div><ul class="step-claims">`;
+    payload.claims.forEach(c => { html += `<li>${escapeHtml(c)}</li>`; });
+    html += `</ul>`;
+  }
+
+  // Evidence
+  if (payload.evidence && payload.evidence.length > 0) {
+    html += `<div class="step-dl-label">Evidence &amp; Sources</div>`;
+    payload.evidence.forEach(ev => {
+      const link = safeUrl(ev.source_url);
+      const filingId = ev.filing_identifier;
+      html += `<div class="step-evidence-item">
+        <span class="step-source-badge">${escapeHtml(ev.source_type || '')}</span>
+        <span class="step-evidence-text">${escapeHtml((ev.text || '').slice(0, 220))}${(ev.text || '').length > 220 ? '…' : ''}</span>
+        ${link ? `<div><a class="step-source-link" href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(urlLabel(link))}</a></div>` : ''}
+        ${!link && filingId ? `<div class="step-filing-id">${escapeHtml(filingId)}</div>` : ''}
+      </div>`;
+    });
+  }
+
+  // Failure reason
+  if (!payload.success && payload.failure_reason) {
+    html += `<div class="step-failure"><span class="step-dl-label">Failure Reason</span> ${escapeHtml(payload.failure_reason)}</div>`;
+  }
+
+  return html;
+}
+
+function buildSynthesisDetail(payload) {
+  let html = '';
+
+  if (payload.key_hypothesis) {
+    html += `<div class="step-dl-label">Key Hypothesis</div>
+    <div class="step-hypothesis">${escapeHtml(payload.key_hypothesis)}</div>`;
+  }
+
+  if (payload.sources && payload.sources.length > 0) {
+    const shown = payload.sources.slice(0, 10);
+    const rest  = payload.sources.length - shown.length;
+    html += `<div class="step-dl-label">Sources (${payload.sources.length})</div><ul class="step-sources">`;
+    shown.forEach(src => {
+      const link = safeUrl(src);
+      html += `<li>${link ? `<a class="step-source-link" href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(urlLabel(link))}</a>` : escapeHtml(src)}</li>`;
+    });
+    if (rest > 0) html += `<li class="step-more">…and ${rest} more</li>`;
+    html += `</ul>`;
+  }
+
+  if (payload.omitted_specialists && payload.omitted_specialists.length > 0) {
+    html += `<div class="step-failure"><span class="step-dl-label">Omitted Specialists</span> ${escapeHtml(payload.omitted_specialists.join(', '))}</div>`;
+  }
+
+  return html;
+}
+
+function buildCritiqueDetail(critique) {
+  if (!critique) return '';
+
+  const sevColor = { none: 'var(--success)', low: 'var(--text-secondary)', medium: 'var(--warning)', high: 'var(--danger)' };
+  const sev = critique.overall_severity || 'none';
+
+  let html = `<div class="step-dl-row">
+    <span class="step-dl-label">Overall Severity</span>
+    <span class="step-sev-badge" style="color:${sevColor[sev] || 'inherit'}">${sev.toUpperCase()}</span>
+  </div>`;
+
+  if (critique.critique_summary) {
+    html += `<div class="step-critique-summary">${escapeHtml(critique.critique_summary)}</div>`;
+  }
+
+  if (critique.issues && critique.issues.length > 0) {
+    html += `<div class="step-dl-label">Issues (${critique.issues.length})</div>`;
+    critique.issues.forEach(issue => {
+      const isevColor = sevColor[issue.severity] || 'inherit';
+      html += `<div class="step-issue-item">
+        <div class="step-issue-header">
+          <span class="step-sev-badge" style="color:${isevColor}">${(issue.severity || '').toUpperCase()}</span>
+          <span class="step-issue-tag">${escapeHtml(issue.tag || '')}</span>
+          <span class="step-issue-agent">${escapeHtml(issue.affected_specialist || '')}</span>
+        </div>
+        <div class="step-issue-quote">"${escapeHtml((issue.quote || '').slice(0, 180))}${(issue.quote || '').length > 180 ? '…' : ''}"</div>
+        ${issue.suggestion ? `<div class="step-issue-suggestion">${escapeHtml(issue.suggestion)}</div>` : ''}
+      </div>`;
+    });
+  }
+
+  return html;
+}
+
 function scrollToBottom(el) {
-  el.scrollTop = el.scrollHeight;
+  // If the element is a constrained scroll container, scroll it directly.
+  // Otherwise fall back to scrolling the last child into view (e.g. steps tab).
+  if (el.scrollHeight > el.clientHeight && getComputedStyle(el).overflowY !== 'visible') {
+    el.scrollTop = el.scrollHeight;
+  } else {
+    el.lastElementChild?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
 }
 
 function escapeHtml(str) {

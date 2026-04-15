@@ -31,6 +31,18 @@ class EvidenceSnippet(BaseModel):
         description="UTC timestamp when the data was fetched",
     )
 
+    @field_validator("source_type", mode="before")
+    @classmethod
+    def _coerce_source_type(cls, v: object) -> str:
+        # Agents sometimes return null — fall back to the declared default.
+        return v if v is not None else "market_data"
+
+    @field_validator("extraction_timestamp", mode="before")
+    @classmethod
+    def _coerce_extraction_timestamp(cls, v: object) -> datetime:
+        # Agents sometimes return null — use the current UTC time as default.
+        return v if v is not None else datetime.utcnow()
+
 
 class SpecialistOutput(BaseModel):
     """Structured output returned by each specialist agent."""

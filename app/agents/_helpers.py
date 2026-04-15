@@ -120,6 +120,10 @@ def parse_specialist_output(text: str, specialist_name: str) -> SpecialistOutput
 
     Falls back to a failure SpecialistOutput if parsing fails.
     """
+    logger.debug(
+        "Raw output from '%s' (%d chars): %.2000s",
+        specialist_name, len(text), text,
+    )
     try:
         raw = _extract_json_block(text)
         raw = _sanitize_json_strings(raw)
@@ -127,7 +131,10 @@ def parse_specialist_output(text: str, specialist_name: str) -> SpecialistOutput
         data.setdefault("specialist", specialist_name)
         return SpecialistOutput.model_validate(data)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to parse SpecialistOutput for %s: %s", specialist_name, exc)
+        logger.warning(
+            "Failed to parse SpecialistOutput for %s: %s\nFull raw text:\n%s",
+            specialist_name, exc, text,
+        )
         return SpecialistOutput(
             specialist=specialist_name,
             claims=["Output parsing failed — raw response could not be decoded as SpecialistOutput."],
@@ -144,9 +151,16 @@ def parse_synthesis_output(text: str) -> SynthesisOutput:
         raw = _extract_json_block(text)
         raw = _sanitize_json_strings(raw)
         data = json.loads(raw)
-        return SynthesisOutput.model_validate(data)
+        result = SynthesisOutput.model_validate(data)
+        logger.debug(
+            "Synthesis narrative (%d chars): %.1000s",
+            len(result.narrative), result.narrative,
+        )
+        return result
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to parse SynthesisOutput: %s", exc)
+        logger.warning(
+            "Failed to parse SynthesisOutput: %s\nFull raw text:\n%s", exc, text,
+        )
         # Treat the whole text as the narrative as a graceful fallback
         return SynthesisOutput(
             narrative=text,
@@ -163,7 +177,9 @@ def parse_critique_output(text: str) -> CritiqueOutput:
         data = json.loads(raw)
         return CritiqueOutput.model_validate(data)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to parse CritiqueOutput: %s", exc)
+        logger.warning(
+            "Failed to parse CritiqueOutput: %s\nFull raw text:\n%s", exc, text,
+        )
         # Treat as no-issues (accept synthesis) to avoid infinite loops
         return CritiqueOutput(
             issues=[],

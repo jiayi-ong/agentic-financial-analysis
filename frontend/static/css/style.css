@@ -613,6 +613,94 @@ html, body {
   color: var(--text-secondary);
 }
 
+/* ── Tool call panel (Reasoning tab) ─────────────────────────── */
+.step-tool-call-item {
+  padding: 6px 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.step-tool-call-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.step-tool-args {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  overflow-wrap: break-word;
+}
+.step-tool-arg-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 0.78rem;
+  padding: 2px 0;
+}
+.step-tool-arg-key {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  min-width: 80px;
+}
+.step-tool-arg-val {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  overflow-wrap: break-word;
+  word-break: break-all;
+}
+.step-code-block {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  overflow-x: auto;
+  white-space: pre;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.step-code-output {
+  background: rgba(34,197,94,0.06);
+  border: 1px solid rgba(34,197,94,0.2);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.73rem;
+  color: var(--success);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.step-tool-error {
+  font-size: 0.75rem;
+  color: var(--danger);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* ── Timing note ──────────────────────────────────────────────── */
+.timing-note {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  text-align: center;
+  padding: 4px 0 8px;
+  opacity: 0.7;
+}
+
 /* ── Scrollbar ───────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg-primary); }

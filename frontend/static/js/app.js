@@ -229,17 +229,24 @@ function routeEvent(event) {
 
     case 'final_output': {
       setAnalysisRunning(false);
-      setStatus('✅', 'Analysis complete.');
+      const secs = payload && payload.thinking_time_seconds != null
+        ? payload.thinking_time_seconds : null;
+      setStatus('✅', secs !== null ? `Analysis complete in ${formatDuration(secs)}.` : 'Analysis complete.');
       const narrative = (payload && payload.narrative) || message;
       addAgentMessage(narrative, payload);
+      if (secs !== null) addTimingNote(secs);
       break;
     }
 
-    case 'abstain':
+    case 'abstain': {
       setAnalysisRunning(false);
       setStatus('⚠️', 'Analysis could not be completed.');
       addAgentMessage(message, payload);
+      const abstainSecs = payload && payload.thinking_time_seconds != null
+        ? payload.thinking_time_seconds : null;
+      if (abstainSecs !== null) addTimingNote(abstainSecs);
       break;
+    }
 
     case 'error':
       setAnalysisRunning(false);
@@ -289,6 +296,20 @@ function addMessage(role, text) {
   scrollToBottom(messagesContainer);
 }
 
+function formatDuration(totalSeconds) {
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = Math.round(totalSeconds % 60);
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function addTimingNote(seconds) {
+  const div = document.createElement('div');
+  div.className = 'timing-note';
+  div.textContent = `\u23F1 Analysis completed in ${formatDuration(seconds)}`;
+  messagesContainer.appendChild(div);
+  scrollToBottom(messagesContainer);
+}
+
 function addAgentMessage(markdown, payload) {
   const div = document.createElement('div');
   div.className = 'message agent-message';
@@ -331,6 +352,8 @@ function addStep(event_type, agent_name, message, timestamp, payload) {
     detailHtml = buildSynthesisDetail(payload);
   } else if (event_type === 'critique_done' && payload && payload.critique) {
     detailHtml = buildCritiqueDetail(payload.critique);
+  } else if (event_type === 'tool_call' && payload && payload.tool_name) {
+    detailHtml = buildToolCallDetail(payload);
   }
 
   const item = document.createElement('div');
@@ -408,6 +431,36 @@ function buildSpecialistDetail(payload) {
     html += `<div class="step-failure"><span class="step-dl-label">Failure Reason</span> ${escapeHtml(payload.failure_reason)}</div>`;
   }
 
+  // Tool Calls
+  if (payload.tool_history && payload.tool_history.length > 0) {
+    html += `<div class="step-dl-label">Tool Calls (${payload.tool_history.length})</div>`;
+    payload.tool_history.forEach(entry => {
+      const toolName = entry.name || 'unknown';
+      const isExecPy = toolName === 'execute_python';
+      html += `<div class="step-tool-call-item">`;
+      html += `<div class="step-tool-call-header">`;
+      html += `<span class="step-source-badge">${escapeHtml(toolName)}</span>`;
+      if (!isExecPy && entry.args) {
+        const argStr = JSON.stringify(entry.args);
+        html += `<span class="step-tool-args">${escapeHtml(argStr.length > 120 ? argStr.slice(0, 120) + '\u2026' : argStr)}</span>`;
+      }
+      html += `</div>`;
+      if (isExecPy && entry.args && entry.args.code) {
+        html += `<pre class="step-code-block"><code>${escapeHtml(entry.args.code)}</code></pre>`;
+        const result = entry.result;
+        const stdout = result && (result.stdout || (result.data && result.data.stdout));
+        const stderr = result && (result.error || (result.data && result.data.error));
+        if (stdout) {
+          html += `<pre class="step-code-output">${escapeHtml(stdout.slice(0, 600))}${stdout.length > 600 ? '\n\u2026' : ''}</pre>`;
+        }
+        if (stderr) {
+          html += `<div class="step-tool-error">${escapeHtml(stderr.slice(0, 300))}</div>`;
+        }
+      }
+      html += `</div>`;
+    });
+  }
+
   return html;
 }
 
@@ -469,6 +522,40 @@ function buildCritiqueDetail(critique) {
     });
   }
 
+  return html;
+}
+
+function buildToolCallDetail(payload) {
+  const toolName = payload.tool_name || '';
+  const args = payload.args || {};
+  const isExecPy = toolName === 'execute_python';
+  const isCrawl  = toolName === 'crawl_news';
+
+  let html = `<div class="step-tool-call-item"><div class="step-tool-call-header"><span class="step-source-badge">${escapeHtml(toolName)}</span></div>`;
+
+  if (isExecPy && args.code) {
+    // Show the code snippet
+    html += `<pre class="step-code-block"><code>${escapeHtml(args.code)}</code></pre>`;
+  } else if (isCrawl) {
+    // Show query and sources list
+    if (args.query) {
+      html += `<div class="step-tool-arg-row"><span class="step-tool-arg-key">query</span><span class="step-tool-arg-val">${escapeHtml(String(args.query))}</span></div>`;
+    }
+    if (args.sources && Array.isArray(args.sources) && args.sources.length > 0) {
+      html += `<div class="step-tool-arg-row"><span class="step-tool-arg-key">sources</span><span class="step-tool-arg-val">${escapeHtml(args.sources.join(', '))}</span></div>`;
+    }
+    if (args.max_articles != null) {
+      html += `<div class="step-tool-arg-row"><span class="step-tool-arg-key">max_articles</span><span class="step-tool-arg-val">${escapeHtml(String(args.max_articles))}</span></div>`;
+    }
+  } else if (Object.keys(args).length > 0) {
+    // Generic: show all args as key: value rows
+    for (const [k, v] of Object.entries(args)) {
+      const valStr = typeof v === 'string' ? v : JSON.stringify(v);
+      html += `<div class="step-tool-arg-row"><span class="step-tool-arg-key">${escapeHtml(k)}</span><span class="step-tool-arg-val">${escapeHtml(valStr.length > 200 ? valStr.slice(0, 200) + '\u2026' : valStr)}</span></div>`;
+    }
+  }
+
+  html += `</div>`;
   return html;
 }
 

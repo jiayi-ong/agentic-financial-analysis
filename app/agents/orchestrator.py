@@ -57,6 +57,14 @@ _APP_NAME = "financial_analyst"
 # When a specialist agent returns prose instead of the required JSON structure,
 # we continue the same ADK session and send this follow-up to force compliance.
 
+_CHART_COERCE_INSTRUCTION = (
+    "You have completed your data collection but produced NO charts. "
+    "You MUST now call execute_python to generate at least one visualisation using "
+    "the real numbers you collected above (e.g. revenue trend, margin trend, or "
+    "price history line chart). Use only the actual values from your tool results — "
+    "no placeholder data. Call execute_python RIGHT NOW."
+)
+
 _JSON_COERCE_INSTRUCTION = (
     "Your previous response was not in the required JSON format. "
     "You MUST now output ONLY a valid JSON object — no prose, no markdown fences, "
@@ -181,6 +189,7 @@ class FinancialOrchestrator:
             Async callback that accepts a SessionEvent and sends it to the client.
         """
         ticker = ticker.upper()
+        _start_time = datetime.utcnow()
         await emit(_event("agent_start", "orchestrator",
                           f"Starting financial analysis for **{ticker}**..."))
 
@@ -249,10 +258,17 @@ class FinancialOrchestrator:
             if attempt == settings.max_critique_retries:
                 # Max retries exhausted
                 if critique.overall_severity == "high":
+                    thinking_time_seconds = round(
+                        (datetime.utcnow() - _start_time).total_seconds(), 1
+                    )
                     abstain_text = self._format_abstain(ticker, critique)
                     await emit(_event(
                         "abstain", "orchestrator", abstain_text,
-                        payload={"narrative": abstain_text, "figures": all_figures},
+                        payload={
+                            "narrative": abstain_text,
+                            "figures": all_figures,
+                            "thinking_time_seconds": thinking_time_seconds,
+                        },
                     ))
                     return abstain_text
                 break  # Accept even with medium/low issues after max retries
@@ -291,8 +307,17 @@ class FinancialOrchestrator:
 
         # ── Step 4: Format and emit final output ──────────────────────────────
         narrative = self._format_final(ticker, final_synthesis)
-        await emit(_event("final_output", "orchestrator", narrative,
-                          payload={"narrative": narrative, "figures": all_figures}))
+        thinking_time_seconds = round(
+            (datetime.utcnow() - _start_time).total_seconds(), 1
+        )
+        await emit(_event(
+            "final_output", "orchestrator", narrative,
+            payload={
+                "narrative": narrative,
+                "figures": all_figures,
+                "thinking_time_seconds": thinking_time_seconds,
+            },
+        ))
         return narrative
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -370,11 +395,13 @@ class FinancialOrchestrator:
             verb = "Re-running" if is_rerun else "Starting"
             await emit(_event("agent_start", name,
                               f"[{name}] {verb} analysis for {ticker}..."))
-            output, figs = await self._run_agent_for_specialist(
+            output, figs, tool_history = await self._run_agent_for_specialist(
                 agent=agent,
                 user_message=self._specialist_prompt(ticker, user_query),
                 run_id=f"{session_id}_{name}_{uuid.uuid4().hex[:6]}",
                 ticker=ticker,
+                emit=emit,
+                emit_label=name,
             )
             status = "done" if output.success else "failed"
             verb_past = "Re-run complete" if is_rerun else f"Analysis {status}"
@@ -389,6 +416,7 @@ class FinancialOrchestrator:
                         json.loads(e.model_dump_json()) for e in output.evidence
                     ],
                     "failure_reason": output.failure_reason,
+                    "tool_history": tool_history,
                 },
             ))
             logger.info(
@@ -485,14 +513,27 @@ class FinancialOrchestrator:
         user_message: str,
         run_id: str,
         ticker: str = "",
-    ) -> tuple[SpecialistOutput, list[str]]:
+        emit: Callable[[SessionEvent], Awaitable[None]] | None = None,
+        emit_label: str = "",
+    ) -> tuple[SpecialistOutput, list[str], list[dict]]:
         """Run an agent via ADK Runner and parse its output as SpecialistOutput.
 
-        Returns (output, figures) where figures is a list of base64 PNG strings
-        captured from any execute_python tool calls during this run.
+        Returns (output, figures, tool_history).  Retries once if the agent
+        returns empty text (e.g. due to a transient model non-response).
         """
-        raw_text, figures = await self._adk_run(agent, user_message, run_id, ticker=ticker)
-        return parse_specialist_output(raw_text, agent.name), figures
+        raw_text, figures, tool_history = await self._adk_run(
+            agent, user_message, run_id, ticker=ticker,
+            emit=emit, emit_label=emit_label,
+        )
+        if not raw_text.strip():
+            logger.warning(
+                "Specialist '%s' returned empty text — retrying once.", agent.name,
+            )
+            raw_text, figures, tool_history = await self._adk_run(
+                agent, user_message, run_id + "_retry", ticker=ticker,
+                emit=emit, emit_label=emit_label,
+            )
+        return parse_specialist_output(raw_text, agent.name), figures, tool_history
 
     async def _run_agent_raw(
         self,
@@ -502,10 +543,12 @@ class FinancialOrchestrator:
         emit: Callable[[SessionEvent], Awaitable[None]],
         agent_label: str,
     ) -> tuple[str, list[str]]:
-        """Run an agent via ADK Runner and return (raw_text, figures)."""
-        return await self._adk_run(
+        """Run an agent via ADK Runner and return (raw_text, figures).
+        tool_history is discarded — synthesis/critique agents have no tools."""
+        raw_text, figures, _tool_history = await self._adk_run(
             agent, user_message, run_id, emit=emit, emit_label=agent_label
         )
+        return raw_text, figures
 
     async def _adk_run(
         self,
@@ -515,9 +558,9 @@ class FinancialOrchestrator:
         emit: Callable[[SessionEvent], Awaitable[None]] | None = None,
         emit_label: str = "",
         ticker: str = "",
-    ) -> tuple[str, list[str]]:
+    ) -> tuple[str, list[str], list[dict]]:
         """
-        Run an ADK LlmAgent and return (final_text, figures).
+        Run an ADK LlmAgent and return (final_text, figures, tool_history).
 
         figures is a list of base64-encoded PNG strings captured from any
         execute_python tool calls during this run.
@@ -557,24 +600,50 @@ class FinancialOrchestrator:
         set_figure_collector(figures)
 
         text_parts: list[str] = []
-        tool_event_seen: set[str] = set()
+        tool_history: list[dict] = []
+        _pending_calls: dict[str, dict] = {}
+        raw_text = ""
 
         try:
+            # ── Main agent run ────────────────────────────────────────────────
             async for event in runner.run_async(
                 user_id="orchestrator",
                 session_id=run_id,
                 new_message=message,
             ):
-                # Emit tool-call events to WebSocket
-                if emit and emit_label:
-                    tool_name = _extract_tool_name(event)
-                    if tool_name and tool_name not in tool_event_seen:
-                        tool_event_seen.add(tool_name)
-                        await emit(_event(
-                            "tool_call", emit_label,
-                            f"[{emit_label}] Calling tool: {tool_name}",
-                            tool_name=tool_name,
-                        ))
+                # Collect tool history AND emit rich tool_call events
+                for part in getattr(getattr(event, "content", None), "parts", []) or []:
+                    fc = getattr(part, "function_call", None)
+                    if fc:
+                        call_id = getattr(fc, "id", None) or getattr(fc, "name", "")
+                        _tool_name = getattr(fc, "name", "")
+                        _call_args = dict(getattr(fc, "args", {}) or {})
+                        entry: dict = {"name": _tool_name, "args": _call_args, "result": None}
+                        tool_history.append(entry)
+                        if call_id:
+                            _pending_calls[call_id] = entry
+                        # Emit every function call with its arguments
+                        if emit and emit_label and _tool_name:
+                            await emit(_event(
+                                "tool_call", emit_label,
+                                f"[{emit_label}] Calling tool: {_tool_name}",
+                                tool_name=_tool_name,
+                                payload={"tool_name": _tool_name, "args": _call_args},
+                            ))
+                    fr = getattr(part, "function_response", None)
+                    if fr:
+                        call_id = getattr(fr, "id", None) or getattr(fr, "name", "")
+                        matched = _pending_calls.get(call_id)
+                        if matched:
+                            raw_result = getattr(fr, "response", None)
+                            if hasattr(raw_result, "model_dump"):
+                                raw_result = raw_result.model_dump()
+                            elif not isinstance(
+                                raw_result,
+                                (dict, list, str, int, float, bool, type(None)),
+                            ):
+                                raw_result = str(raw_result)
+                            matched["result"] = raw_result
 
                 # Collect final text response
                 if hasattr(event, "is_final_response") and event.is_final_response():
@@ -592,53 +661,89 @@ class FinancialOrchestrator:
                             t = getattr(part, "text", None)
                             if t:
                                 text_parts.append(t)
+
+            raw_text = "".join(text_parts)
+
+            # ── JSON coercion follow-up ───────────────────────────────────────
+            # If the agent returned prose or nothing instead of JSON, continue
+            # the same session and ask it to reformat.  The model still has all
+            # its tool results in context so it can produce a valid JSON output.
+            if not _looks_like_json(raw_text):
+                logger.info(
+                    "Agent %s did not return JSON (len=%d). Sending coercion follow-up.",
+                    agent.name, len(raw_text),
+                )
+                coerce_msg = genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=_JSON_COERCE_INSTRUCTION)],
+                )
+                coerce_parts: list[str] = []
+                async for event in runner.run_async(
+                    user_id="orchestrator",
+                    session_id=run_id,
+                    new_message=coerce_msg,
+                ):
+                    if hasattr(event, "is_final_response") and event.is_final_response():
+                        content = getattr(event, "content", None)
+                        if content:
+                            for part in getattr(content, "parts", []):
+                                t = getattr(part, "text", None)
+                                if t:
+                                    coerce_parts.append(t)
+                    elif hasattr(event, "content") and event.content:
+                        content = event.content
+                        if getattr(content, "role", "") in ("model", "assistant"):
+                            for part in getattr(content, "parts", []):
+                                t = getattr(part, "text", None)
+                                if t:
+                                    coerce_parts.append(t)
+                if coerce_parts:
+                    coerced = "".join(coerce_parts)
+                    # Only adopt the coercion result if it improved the situation
+                    if _looks_like_json(coerced) or len(coerced) > len(raw_text):
+                        raw_text = coerced
+
+            # ── Chart coercion for financial_analyst ─────────────────────────
+            # If the agent collected data but produced no figures, continue the
+            # session and ask it to call execute_python now.  The figure
+            # collector is still active so any plt.show() calls are captured.
+            if agent.name == "financial_analyst" and not figures:
+                logger.info(
+                    "financial_analyst produced no figures — sending chart coercion."
+                )
+                chart_msg = genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=_CHART_COERCE_INSTRUCTION)],
+                )
+                async for event in runner.run_async(
+                    user_id="orchestrator",
+                    session_id=run_id,
+                    new_message=chart_msg,
+                ):
+                    # Capture any new tool calls for tool_history
+                    for part in getattr(getattr(event, "content", None), "parts", []) or []:
+                        fc = getattr(part, "function_call", None)
+                        if fc:
+                            _tool_name = getattr(fc, "name", "")
+                            _call_args = dict(getattr(fc, "args", {}) or {})
+                            entry = {"name": _tool_name, "args": _call_args, "result": None}
+                            tool_history.append(entry)
+                            if emit and emit_label and _tool_name:
+                                await emit(_event(
+                                    "tool_call", emit_label,
+                                    f"[{emit_label}] Calling tool: {_tool_name}",
+                                    tool_name=_tool_name,
+                                    payload={"tool_name": _tool_name, "args": _call_args},
+                                ))
+
         finally:
-            # Always clear the collector so it doesn't leak to subsequent runs
+            # Always clear the collector so it doesn't leak to subsequent runs.
+            # This runs AFTER all coercions so execute_python calls inside any
+            # coercion still find a live collector.
             set_figure_collector(None)
             logger.info("Agent '%s' captured %d figure(s).", agent.name, len(figures))
 
-        raw_text = "".join(text_parts)
-
-        # ── JSON coercion follow-up ───────────────────────────────────────────
-        # If the agent returned prose or nothing instead of JSON, continue the
-        # same session and ask it to reformat.  The model still has all its
-        # tool results in context so it can produce a valid JSON output.
-        if not _looks_like_json(raw_text):
-            logger.info(
-                "Agent %s did not return JSON (len=%d). Sending coercion follow-up.",
-                agent.name, len(raw_text),
-            )
-            coerce_msg = genai_types.Content(
-                role="user",
-                parts=[genai_types.Part(text=_JSON_COERCE_INSTRUCTION)],
-            )
-            coerce_parts: list[str] = []
-            async for event in runner.run_async(
-                user_id="orchestrator",
-                session_id=run_id,
-                new_message=coerce_msg,
-            ):
-                if hasattr(event, "is_final_response") and event.is_final_response():
-                    content = getattr(event, "content", None)
-                    if content:
-                        for part in getattr(content, "parts", []):
-                            t = getattr(part, "text", None)
-                            if t:
-                                coerce_parts.append(t)
-                elif hasattr(event, "content") and event.content:
-                    content = event.content
-                    if getattr(content, "role", "") in ("model", "assistant"):
-                        for part in getattr(content, "parts", []):
-                            t = getattr(part, "text", None)
-                            if t:
-                                coerce_parts.append(t)
-            if coerce_parts:
-                coerced = "".join(coerce_parts)
-                # Only adopt the coercion result if it improved the situation
-                if _looks_like_json(coerced) or len(coerced) > len(raw_text):
-                    raw_text = coerced
-
-        return raw_text, figures
+        return raw_text, figures, tool_history
 
     # ─────────────────────────────────────────────────────────────────────────
     # Prompt / context builders
@@ -731,16 +836,3 @@ def _event(
         payload=payload or {},
         timestamp=datetime.utcnow(),
     )
-
-
-def _extract_tool_name(event: Any) -> str | None:
-    """Best-effort extraction of tool name from an ADK event."""
-    # Check for FunctionCall in parts
-    content = getattr(event, "content", None)
-    if not content:
-        return None
-    for part in getattr(content, "parts", []):
-        fc = getattr(part, "function_call", None)
-        if fc:
-            return getattr(fc, "name", None)
-    return None

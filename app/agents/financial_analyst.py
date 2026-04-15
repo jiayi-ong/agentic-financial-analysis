@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from google.adk.agents import LlmAgent
 from google.adk.tools import FunctionTool
+from google.genai import types as genai_types
 
 from app.agents._helpers import load_prompt
 from app.config import settings
@@ -44,6 +45,11 @@ def create_financial_analyst() -> LlmAgent:
             "margin trends, and balance sheet health from Yahoo Finance data."
         ),
         instruction=load_prompt("financial_analyst"),
+        # Disable extended thinking so the model follows tool-calling instructions
+        # literally rather than reasoning its way to hallucinated answers.
+        generate_content_config=genai_types.GenerateContentConfig(
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+        ),
         tools=[
             FunctionTool(func=get_stock_info),
             FunctionTool(func=get_price_history),

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from google.adk.agents import LlmAgent
 from google.adk.tools import FunctionTool
+from google.genai import types as genai_types
 
 from app.agents._helpers import load_prompt
 from app.config import settings
@@ -29,6 +30,9 @@ def create_ratings_analyst() -> LlmAgent:
             "from SEC filings (10-K, 10-Q, 8-K)."
         ),
         instruction=load_prompt("ratings_analyst"),
+        generate_content_config=genai_types.GenerateContentConfig(
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+        ),
         tools=[
             FunctionTool(func=get_analyst_recommendations),
             FunctionTool(func=get_earnings_calendar),

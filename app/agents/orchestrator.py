@@ -2,7 +2,8 @@
 Financial Analysis Orchestrator.
 
 Controls the full pipeline:
-  Analyze (4 specialists, parallel)
+  Classify intent (which specialists are needed)
+    → Analyse (selected specialists, parallel)
     → Synthesise
     → Critique
     → [if issues] Targeted re-run of affected specialists
@@ -45,6 +46,7 @@ from app.config import settings
 from app.schemas.agent_output import SpecialistOutput, SynthesisOutput
 from app.schemas.critique import CritiqueOutput
 from app.schemas.session import SessionEvent
+from app.tools.code_executor import set_figure_collector
 from app.utils.disclaimer import DISCLAIMER
 
 logger = logging.getLogger(__name__)
@@ -75,11 +77,52 @@ _JSON_COERCE_INSTRUCTION = (
     "Start your response with { and end with }. Output ONLY the JSON."
 )
 
+# ── Intent classification — keyword sets ─────────────────────────────────────
+# Used by the deterministic keyword classifier in _classify_intent().
+# Each set is a collection of lowercase substrings; a match means the
+# corresponding specialist is relevant.
+
+_COMPREHENSIVE_KEYWORDS: frozenset[str] = frozenset({
+    "comprehensive", "full", "overview", "analysis", "analyse", "analyze",
+    "tell me about", "everything", "report", "all aspects", "deep dive",
+    "deep-dive", "complete", "holistic",
+})
+
+_SPECIALIST_KEYWORDS: dict[str, frozenset[str]] = {
+    "financial_analyst": frozenset({
+        "revenue", "earnings", "margin", "dcf", "valuation", "p/e", "pe ratio",
+        "cash flow", "cashflow", "balance sheet", "chart", "graph", "plot",
+        "price", "financial", "metric", "growth", "profit", "loss", "income",
+        "ebitda", "return", "ratio", "dividend", "free cash flow", "fcf",
+        "gross margin", "operating", "net income", "eps", "shares",
+    }),
+    "macro_analyst": frozenset({
+        "macro", "economy", "economic", "interest rate", "fed",
+        "federal reserve", "inflation", "gdp", "tariff", "trade", "geopolit",
+        "supply chain", "regulation", "antitrust", "monetary", "recession",
+        "china", "global", "central bank", "rate hike", "rate cut", "policy",
+        "sector",
+    }),
+    "sentiment_analyst": frozenset({
+        "news", "sentiment", "market sentiment", "media", "coverage",
+        "buzz", "narrative", "press", "article", "headline", "social",
+        "public opinion", "investor sentiment", "market mood",
+    }),
+    "ratings_analyst": frozenset({
+        "analyst", "rating", "recommendation", "target price", "price target",
+        "upgrade", "downgrade", "sec", "filing", "10-k", "10-q", "10k",
+        "10q", "guidance", "management", "outlook", "consensus",
+        "wall street", "buy", "sell", "hold",
+    }),
+}
+
 
 def _looks_like_json(text: str) -> bool:
     """Return True if *text* appears to be (or contain) a JSON object."""
     s = text.strip()
     return bool(s) and (s.startswith("{") or ("```" in s and "{" in s))
+
+
 
 
 class FinancialOrchestrator:
@@ -141,16 +184,27 @@ class FinancialOrchestrator:
         await emit(_event("agent_start", "orchestrator",
                           f"Starting financial analysis for **{ticker}**..."))
 
-        # ── Step 1: Run all 4 specialists in parallel ─────────────────────────
-        await emit(_event("agent_start", "orchestrator",
-                          "Launching specialist agents in parallel: "
-                          "Macro, Financial, Sentiment, Ratings..."))
+        # ── Step 0: Classify user intent ──────────────────────────────────────
+        selected_names = self._classify_intent(user_query, ticker)
+        label = ", ".join(selected_names)
+        await emit(_event(
+            "agent_start", "orchestrator",
+            f"Analysis scope: **{label}** — tailored to your request.",
+            payload={"selected_specialists": selected_names},
+        ))
 
-        specialist_outputs = await self._run_all_specialists(
+        # ── Step 1: Run selected specialists in parallel ───────────────────────
+        specialist_outputs, all_figures = await self._run_specialists_by_name(
+            names=selected_names,
             ticker=ticker,
             user_query=user_query,
             session_id=session_id,
             emit=emit,
+            is_rerun=False,
+        )
+
+        logger.info(
+            "All specialists done. Total figures accumulated: %d", len(all_figures)
         )
 
         # Report any failures
@@ -166,6 +220,7 @@ class FinancialOrchestrator:
             ticker=ticker,
             session_id=session_id,
             emit=emit,
+            selected_specialists=selected_names,
         )
 
         # ── Step 3: Critique → triage loop ────────────────────────────────────
@@ -197,7 +252,7 @@ class FinancialOrchestrator:
                     abstain_text = self._format_abstain(ticker, critique)
                     await emit(_event(
                         "abstain", "orchestrator", abstain_text,
-                        payload={"narrative": abstain_text},
+                        payload={"narrative": abstain_text, "figures": all_figures},
                     ))
                     return abstain_text
                 break  # Accept even with medium/low issues after max retries
@@ -213,13 +268,15 @@ class FinancialOrchestrator:
             await emit(_event("rerun_start", "orchestrator",
                               f"Re-running specialists to address issues: {', '.join(affected)}"))
 
-            rerun_outputs = await self._run_specialists_by_name(
+            rerun_outputs, rerun_figures = await self._run_specialists_by_name(
                 names=affected,
                 ticker=ticker,
                 user_query=user_query,
                 session_id=session_id,
                 emit=emit,
+                is_rerun=True,
             )
+            all_figures.extend(rerun_figures)
             # Merge re-run results into the full specialist outputs dict
             specialist_outputs.update(rerun_outputs)
 
@@ -229,62 +286,63 @@ class FinancialOrchestrator:
                 session_id=session_id,
                 emit=emit,
                 is_rerun=True,
+                selected_specialists=selected_names,
             )
 
         # ── Step 4: Format and emit final output ──────────────────────────────
         narrative = self._format_final(ticker, final_synthesis)
         await emit(_event("final_output", "orchestrator", narrative,
-                          payload={"narrative": narrative}))
+                          payload={"narrative": narrative, "figures": all_figures}))
         return narrative
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Intent classification
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _classify_intent(self, user_query: str, ticker: str) -> list[str]:
+        """
+        Deterministic keyword-based classifier for selecting which specialist
+        agents are relevant for this query.  No network calls, never fails.
+
+        Selection rules (evaluated in order):
+        1. If the query contains any "comprehensive" keyword → all 4 specialists.
+        2. Match each specialist's keyword set against the lowercased query.
+        3. financial_analyst is added unless the query is *exclusively* about
+           news/sentiment or analyst ratings/filings.
+        4. If nothing matched, fall back to all 4 specialists.
+        """
+        q = user_query.lower()
+
+        # Rule 1: comprehensive / general query
+        if any(kw in q for kw in _COMPREHENSIVE_KEYWORDS):
+            logger.info("Intent classification for '%s': all specialists (comprehensive query)", ticker)
+            return list(self._specialists.keys())
+
+        # Rule 2: keyword matching per specialist
+        selected: set[str] = {
+            name
+            for name, keywords in _SPECIALIST_KEYWORDS.items()
+            if any(kw in q for kw in keywords)
+        }
+
+        # Rule 3: always include financial_analyst unless query is ONLY about
+        # news/sentiment or analyst ratings (these are self-contained requests).
+        only_non_financial = selected.issubset({"sentiment_analyst", "ratings_analyst"})
+        if not only_non_financial:
+            selected.add("financial_analyst")
+
+        # Rule 4: fallback to all if nothing matched
+        if not selected:
+            selected = set(self._specialists.keys())
+
+        # Preserve canonical insertion order from self._specialists
+        result = [name for name in self._specialists if name in selected]
+        logger.info("Intent classification for '%s': %s", ticker, result)
+        return result
 
     # ─────────────────────────────────────────────────────────────────────────
     # Internal pipeline steps
     # ─────────────────────────────────────────────────────────────────────────
-
-    async def _run_all_specialists(
-        self,
-        ticker: str,
-        user_query: str,
-        session_id: str,
-        emit: Callable[[SessionEvent], Awaitable[None]],
-    ) -> dict[str, SpecialistOutput]:
-        """Run all 4 specialists concurrently via asyncio.gather."""
-
-        async def _run_one(name: str, agent: LlmAgent) -> tuple[str, SpecialistOutput]:
-            await emit(_event("agent_start", name, f"[{name}] Starting analysis for {ticker}..."))
-            output = await self._run_agent_for_specialist(
-                agent=agent,
-                user_message=self._specialist_prompt(ticker, user_query),
-                run_id=f"{session_id}_{name}_{uuid.uuid4().hex[:6]}",
-            )
-            status = "done" if output.success else "failed"
-            await emit(_event(
-                "agent_done", name,
-                f"[{name}] Analysis {status}. Confidence: {output.confidence:.0%}",
-                payload={
-                    "success": output.success,
-                    "confidence": output.confidence,
-                    "claims": output.claims,
-                    "evidence": [
-                        json.loads(e.model_dump_json()) for e in output.evidence
-                    ],
-                    "failure_reason": output.failure_reason,
-                },
-            ))
-            return name, output
-
-        tasks = [_run_one(name, agent) for name, agent in self._specialists.items()]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        outputs: dict[str, SpecialistOutput] = {}
-        for result in results:
-            if isinstance(result, Exception):
-                logger.error("Specialist task raised: %s", result)
-            else:
-                name, output = result
-                outputs[name] = output
-
-        return outputs
 
     async def _run_specialists_by_name(
         self,
@@ -293,20 +351,36 @@ class FinancialOrchestrator:
         user_query: str,
         session_id: str,
         emit: Callable[[SessionEvent], Awaitable[None]],
-    ) -> dict[str, SpecialistOutput]:
-        """Re-run a subset of specialists by name."""
+        is_rerun: bool = False,
+    ) -> tuple[dict[str, SpecialistOutput], list[str]]:
+        """
+        Run a set of specialists concurrently and return their outputs + any figures.
 
-        async def _run_one(name: str) -> tuple[str, SpecialistOutput]:
+        Parameters
+        ----------
+        names:
+            List of specialist names to run (must be keys in self._specialists).
+        is_rerun:
+            If True, log messages say "Re-running" instead of "Starting".
+        """
+        all_figures: list[str] = []
+
+        async def _run_one(name: str) -> tuple[str, SpecialistOutput, list[str]]:
             agent = self._specialists[name]
-            await emit(_event("agent_start", name, f"[{name}] Re-running for {ticker}..."))
-            output = await self._run_agent_for_specialist(
+            verb = "Re-running" if is_rerun else "Starting"
+            await emit(_event("agent_start", name,
+                              f"[{name}] {verb} analysis for {ticker}..."))
+            output, figs = await self._run_agent_for_specialist(
                 agent=agent,
                 user_message=self._specialist_prompt(ticker, user_query),
-                run_id=f"{session_id}_{name}_rerun_{uuid.uuid4().hex[:6]}",
+                run_id=f"{session_id}_{name}_{uuid.uuid4().hex[:6]}",
+                ticker=ticker,
             )
+            status = "done" if output.success else "failed"
+            verb_past = "Re-run complete" if is_rerun else f"Analysis {status}"
             await emit(_event(
                 "agent_done", name,
-                f"[{name}] Re-run complete. Confidence: {output.confidence:.0%}",
+                f"[{name}] {verb_past}. Confidence: {output.confidence:.0%}",
                 payload={
                     "success": output.success,
                     "confidence": output.confidence,
@@ -317,18 +391,30 @@ class FinancialOrchestrator:
                     "failure_reason": output.failure_reason,
                 },
             ))
-            return name, output
+            logger.info(
+                "Specialist '%s': success=%s confidence=%.0f%% claims=%d figures=%d",
+                name, output.success, output.confidence * 100, len(output.claims), len(figs),
+            )
+            for i, claim in enumerate(output.claims, 1):
+                logger.info("  [%s] Claim %d: %s", name, i, claim)
+            return name, output, figs
 
+        valid_names = [n for n in names if n in self._specialists]
         results = await asyncio.gather(
-            *[_run_one(n) for n in names if n in self._specialists],
+            *[_run_one(n) for n in valid_names],
             return_exceptions=True,
         )
-        return {
-            name: output
-            for result in results
-            if not isinstance(result, Exception)
-            for name, output in [result]
-        }
+
+        outputs: dict[str, SpecialistOutput] = {}
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error("Specialist task raised: %s", result)
+            else:
+                name, output, figs = result
+                outputs[name] = output
+                all_figures.extend(figs)
+
+        return outputs, all_figures
 
     async def _synthesise(
         self,
@@ -336,14 +422,17 @@ class FinancialOrchestrator:
         ticker: str,
         session_id: str,
         emit: Callable[[SessionEvent], Awaitable[None]],
+        selected_specialists: list[str] | None = None,
         is_rerun: bool = False,
     ) -> SynthesisOutput:
         label = "Re-synthesising" if is_rerun else "Synthesising"
         await emit(_event("synthesis_start", "synthesis_agent",
                           f"{label} specialist findings for {ticker}..."))
 
-        context = self._build_synthesis_context(specialist_outputs, ticker)
-        raw_text = await self._run_agent_raw(
+        context = self._build_synthesis_context(
+            specialist_outputs, ticker, selected_specialists or []
+        )
+        raw_text, _ = await self._run_agent_raw(
             agent=self._synthesis_agent,
             user_message=context,
             run_id=f"{session_id}_synthesis_{uuid.uuid4().hex[:6]}",
@@ -351,6 +440,10 @@ class FinancialOrchestrator:
             agent_label="synthesis_agent",
         )
         synthesis = parse_synthesis_output(raw_text)
+        logger.info(
+            "Synthesis narrative (%d chars): %.1500s",
+            len(synthesis.narrative), synthesis.narrative,
+        )
 
         await emit(_event("synthesis_done", "synthesis_agent",
                           "Synthesis complete.",
@@ -373,7 +466,7 @@ class FinancialOrchestrator:
             + "\n\nKey hypothesis: "
             + synthesis.key_hypothesis
         )
-        raw_text = await self._run_agent_raw(
+        raw_text, _ = await self._run_agent_raw(
             agent=self._critique_agent,
             user_message=context,
             run_id=f"{session_id}_critique_{uuid.uuid4().hex[:6]}",
@@ -391,10 +484,15 @@ class FinancialOrchestrator:
         agent: LlmAgent,
         user_message: str,
         run_id: str,
-    ) -> SpecialistOutput:
-        """Run an agent via ADK Runner and parse its output as SpecialistOutput."""
-        raw_text = await self._adk_run(agent, user_message, run_id)
-        return parse_specialist_output(raw_text, agent.name)
+        ticker: str = "",
+    ) -> tuple[SpecialistOutput, list[str]]:
+        """Run an agent via ADK Runner and parse its output as SpecialistOutput.
+
+        Returns (output, figures) where figures is a list of base64 PNG strings
+        captured from any execute_python tool calls during this run.
+        """
+        raw_text, figures = await self._adk_run(agent, user_message, run_id, ticker=ticker)
+        return parse_specialist_output(raw_text, agent.name), figures
 
     async def _run_agent_raw(
         self,
@@ -403,9 +501,11 @@ class FinancialOrchestrator:
         run_id: str,
         emit: Callable[[SessionEvent], Awaitable[None]],
         agent_label: str,
-    ) -> str:
-        """Run an agent via ADK Runner and return raw text."""
-        return await self._adk_run(agent, user_message, run_id, emit=emit, emit_label=agent_label)
+    ) -> tuple[str, list[str]]:
+        """Run an agent via ADK Runner and return (raw_text, figures)."""
+        return await self._adk_run(
+            agent, user_message, run_id, emit=emit, emit_label=agent_label
+        )
 
     async def _adk_run(
         self,
@@ -414,12 +514,19 @@ class FinancialOrchestrator:
         run_id: str,
         emit: Callable[[SessionEvent], Awaitable[None]] | None = None,
         emit_label: str = "",
-    ) -> str:
+        ticker: str = "",
+    ) -> tuple[str, list[str]]:
         """
-        Run an ADK LlmAgent and return its final text response.
+        Run an ADK LlmAgent and return (final_text, figures).
+
+        figures is a list of base64-encoded PNG strings captured from any
+        execute_python tool calls during this run.
 
         Creates an isolated InMemorySessionService per run to prevent
         cross-contamination between parallel specialist runs.
+
+        ticker is stored in ADK session state so that any {ticker} template
+        references in agent instructions resolve correctly.
         """
         session_service = InMemorySessionService()
         runner = Runner(
@@ -428,10 +535,14 @@ class FinancialOrchestrator:
             session_service=session_service,
         )
 
+        # Store ticker in session state so ADK template resolution works for
+        # any {ticker} references that might appear in agent instructions.
+        session_state = {"ticker": ticker} if ticker else {}
         await session_service.create_session(
             app_name=_APP_NAME,
             user_id="orchestrator",
             session_id=run_id,
+            state=session_state,
         )
 
         message = genai_types.Content(
@@ -439,41 +550,52 @@ class FinancialOrchestrator:
             parts=[genai_types.Part(text=user_message)],
         )
 
+        # Register a figure collector for this run.
+        # execute_python pushes any captured matplotlib PNGs into this list
+        # via a ContextVar that propagates through sync and asyncio.to_thread calls.
+        figures: list[str] = []
+        set_figure_collector(figures)
+
         text_parts: list[str] = []
         tool_event_seen: set[str] = set()
 
-        async for event in runner.run_async(
-            user_id="orchestrator",
-            session_id=run_id,
-            new_message=message,
-        ):
-            # Emit tool-call events to WebSocket
-            if emit and emit_label:
-                tool_name = _extract_tool_name(event)
-                if tool_name and tool_name not in tool_event_seen:
-                    tool_event_seen.add(tool_name)
-                    await emit(_event(
-                        "tool_call", emit_label,
-                        f"[{emit_label}] Calling tool: {tool_name}",
-                        tool_name=tool_name,
-                    ))
+        try:
+            async for event in runner.run_async(
+                user_id="orchestrator",
+                session_id=run_id,
+                new_message=message,
+            ):
+                # Emit tool-call events to WebSocket
+                if emit and emit_label:
+                    tool_name = _extract_tool_name(event)
+                    if tool_name and tool_name not in tool_event_seen:
+                        tool_event_seen.add(tool_name)
+                        await emit(_event(
+                            "tool_call", emit_label,
+                            f"[{emit_label}] Calling tool: {tool_name}",
+                            tool_name=tool_name,
+                        ))
 
-            # Collect final text response
-            if hasattr(event, "is_final_response") and event.is_final_response():
-                content = getattr(event, "content", None)
-                if content:
-                    for part in getattr(content, "parts", []):
-                        t = getattr(part, "text", None)
-                        if t:
-                            text_parts.append(t)
-            elif hasattr(event, "content") and event.content:
-                content = event.content
-                role = getattr(content, "role", "")
-                if role in ("model", "assistant"):
-                    for part in getattr(content, "parts", []):
-                        t = getattr(part, "text", None)
-                        if t:
-                            text_parts.append(t)
+                # Collect final text response
+                if hasattr(event, "is_final_response") and event.is_final_response():
+                    content = getattr(event, "content", None)
+                    if content:
+                        for part in getattr(content, "parts", []):
+                            t = getattr(part, "text", None)
+                            if t:
+                                text_parts.append(t)
+                elif hasattr(event, "content") and event.content:
+                    content = event.content
+                    role = getattr(content, "role", "")
+                    if role in ("model", "assistant"):
+                        for part in getattr(content, "parts", []):
+                            t = getattr(part, "text", None)
+                            if t:
+                                text_parts.append(t)
+        finally:
+            # Always clear the collector so it doesn't leak to subsequent runs
+            set_figure_collector(None)
+            logger.info("Agent '%s' captured %d figure(s).", agent.name, len(figures))
 
         raw_text = "".join(text_parts)
 
@@ -516,7 +638,7 @@ class FinancialOrchestrator:
                 if _looks_like_json(coerced) or len(coerced) > len(raw_text):
                     raw_text = coerced
 
-        return raw_text
+        return raw_text, figures
 
     # ─────────────────────────────────────────────────────────────────────────
     # Prompt / context builders
@@ -525,17 +647,26 @@ class FinancialOrchestrator:
     @staticmethod
     def _specialist_prompt(ticker: str, user_query: str) -> str:
         return (
-            f"Perform your specialist analysis for the technology company with ticker: **{ticker}**.\n\n"
-            f"User query context: {user_query}\n\n"
-            "Use your available tools to collect data, then return your structured output as a JSON object."
+            f"Perform your specialist analysis for **{ticker}**.\n\n"
+            f"User query: {user_query}\n\n"
+            "Focus your analysis on the aspects most relevant to this query. "
+            "Use your available tools to collect data, then return your structured "
+            "output as a JSON object."
         )
 
     @staticmethod
     def _build_synthesis_context(
         specialist_outputs: dict[str, SpecialistOutput],
         ticker: str,
+        selected_specialists: list[str],
     ) -> str:
-        sections = [f"Synthesise the following specialist analyses for **{ticker}**:\n"]
+        ran = list(specialist_outputs.keys())
+        sections = [
+            f"Synthesise the following specialist analyses for **{ticker}**.\n",
+            f"Specialists that ran: {', '.join(ran) if ran else 'none'}",
+            f"Specialists not run (out of scope for this query): "
+            f"{', '.join(s for s in selected_specialists if s not in ran) or 'none'}\n",
+        ]
         for name, output in specialist_outputs.items():
             sections.append(output.to_context_str())
             sections.append("---")
@@ -554,7 +685,7 @@ class FinancialOrchestrator:
         if synthesis.omitted_specialists:
             names = ", ".join(synthesis.omitted_specialists)
             omitted_note = (
-                f"\n\n### ⚠️ Data Gaps\n"
+                f"\n\n### Data Gaps\n"
                 f"The following specialist analyses could not be completed and were "
                 f"excluded from this report: **{names}**."
             )

@@ -1,0 +1,135 @@
+Symbol,Name,Exchange
+AAPL,Apple Inc.,NASDAQ
+MSFT,Microsoft Corporation,NASDAQ
+GOOGL,Alphabet Inc. Class A,NASDAQ
+GOOG,Alphabet Inc. Class C,NASDAQ
+AMZN,Amazon.com Inc.,NASDAQ
+NVDA,NVIDIA Corporation,NASDAQ
+META,Meta Platforms Inc.,NASDAQ
+TSLA,Tesla Inc.,NASDAQ
+AVGO,Broadcom Inc.,NASDAQ
+ORCL,Oracle Corporation,NYSE
+AMD,Advanced Micro Devices Inc.,NASDAQ
+INTC,Intel Corporation,NASDAQ
+QCOM,QUALCOMM Incorporated,NASDAQ
+CRM,Salesforce Inc.,NYSE
+ADBE,Adobe Inc.,NASDAQ
+NOW,ServiceNow Inc.,NYSE
+UBER,Uber Technologies Inc.,NYSE
+NFLX,Netflix Inc.,NASDAQ
+SHOP,Shopify Inc.,NYSE
+SQ,Block Inc.,NYSE
+SNOW,Snowflake Inc.,NYSE
+PLTR,Palantir Technologies Inc.,NYSE
+COIN,Coinbase Global Inc.,NASDAQ
+HOOD,Robinhood Markets Inc.,NASDAQ
+ZM,Zoom Video Communications Inc.,NASDAQ
+TWLO,Twilio Inc.,NYSE
+NET,Cloudflare Inc.,NYSE
+MDB,MongoDB Inc.,NASDAQ
+DDOG,Datadog Inc.,NASDAQ
+CRWD,CrowdStrike Holdings Inc.,NASDAQ
+S,SentinelOne Inc.,NYSE
+PANW,Palo Alto Networks Inc.,NASDAQ
+ABNB,Airbnb Inc.,NASDAQ
+LYFT,Lyft Inc.,NASDAQ
+SNAP,Snap Inc.,NYSE
+PINS,Pinterest Inc.,NYSE
+SPOT,Spotify Technology S.A.,NYSE
+ROKU,Roku Inc.,NASDAQ
+RBLX,Roblox Corporation,NYSE
+U,Unity Software Inc.,NYSE
+PATH,UiPath Inc.,NYSE
+AI,C3.ai Inc.,NYSE
+IBM,International Business Machines Corp.,NYSE
+HPQ,HP Inc.,NYSE
+DELL,Dell Technologies Inc.,NYSE
+WDC,Western Digital Corporation,NASDAQ
+STX,Seagate Technology Holdings PLC,NASDAQ
+AMAT,Applied Materials Inc.,NASDAQ
+LRCX,Lam Research Corporation,NASDAQ
+KLAC,KLA Corporation,NASDAQ
+MRVL,Marvell Technology Inc.,NASDAQ
+MCHP,Microchip Technology Inc.,NASDAQ
+TXN,Texas Instruments Inc.,NASDAQ
+ADI,Analog Devices Inc.,NASDAQ
+NXPI,NXP Semiconductors N.V.,NASDAQ
+ON,ON Semiconductor Corporation,NASDAQ
+SWKS,Skyworks Solutions Inc.,NASDAQ
+QRVO,Qorvo Inc.,NASDAQ
+MPWR,Monolithic Power Systems Inc.,NASDAQ
+ENTG,Entegris Inc.,NASDAQ
+AMKR,Amkor Technology Inc.,NASDAQ
+OLED,Universal Display Corporation,NASDAQ
+CREE,Wolfspeed Inc.,NYSE
+ACLS,Axcelis Technologies Inc.,NASDAQ
+FORM,FormFactor Inc.,NASDAQ
+POWI,Power Integrations Inc.,NASDAQ
+RMBS,Rambus Inc.,NASDAQ
+ONTO,Onto Innovation Inc.,NYSE
+COHU,Cohu Inc.,NASDAQ
+AMBA,Ambarella Inc.,NASDAQ
+SLAB,Silicon Laboratories Inc.,NASDAQ
+ISRG,Intuitive Surgical Inc.,NASDAQ
+ANSS,ANSYS Inc.,NASDAQ
+CDNS,Cadence Design Systems Inc.,NASDAQ
+SNPS,Synopsys Inc.,NASDAQ
+MANH,Manhattan Associates Inc.,NASDAQ
+FTNT,Fortinet Inc.,NASDAQ
+OKTA,Okta Inc.,NASDAQ
+ZS,Zscaler Inc.,NASDAQ
+CYBR,CyberArk Software Ltd.,NASDAQ
+TENB,Tenable Holdings Inc.,NASDAQ
+RPD,Rapid7 Inc.,NASDAQ
+VNET,21Vianet Group Inc.,NASDAQ
+DOCN,DigitalOcean Holdings Inc.,NYSE
+CLOU,Global X Cloud Computing ETF,NASDAQ
+WCLD,WisdomTree Cloud Computing Fund,NASDAQ
+HUBS,HubSpot Inc.,NYSE
+BILL,BILL Holdings Inc.,NYSE
+FRSH,Freshworks Inc.,NASDAQ
+GTLB,GitLab Inc.,NASDAQ
+TASK,TaskUs Inc.,NASDAQ
+AMPL,Amplitude Inc.,NASDAQ
+BRZE,Braze Inc.,NASDAQ
+PCVX,Vaxcyte Inc.,NASDAQ
+SMAR,Smartsheet Inc.,NYSE
+ASAN,Asana Inc.,NYSE
+BOX,Box Inc.,NYSE
+DOCUSIGN,DocuSign Inc.,NASDAQ
+DOCU,DocuSign Inc.,NASDAQ
+ESTC,Elastic N.V.,NYSE
+APPF,AppFolio Inc.,NASDAQ
+VEEV,Veeva Systems Inc.,NYSE
+PAYC,Paycom Software Inc.,NYSE
+WK,Workiva Inc.,NYSE
+PCTY,Paylocity Holding Corporation,NASDAQ
+JAMF,Jamf Holding Corp.,NASDAQ
+SPRK,Switchback Energy Acquisition Corp.,NYSE
+DT,Dynatrace Inc.,NYSE
+AIOT,ProShares Internet of Things ETF,NYSE
+IOT,Samsara Inc.,NYSE
+KVYO,Klaviyo Inc.,NYSE
+SOUN,SoundHound AI Inc.,NASDAQ
+BBAI,BigBear.ai Holdings Inc.,NYSE
+GFAI,Guardforce AI Co. Ltd.,NASDAQ
+RCAT,Red Cat Holdings Inc.,NASDAQ
+ACHR,Archer Aviation Inc.,NYSE
+JOBY,Joby Aviation Inc.,NYSE
+LILM,Lilium N.V.,NASDAQ
+EVTL,Vertical Aerospace Ltd.,NYSE
+RNAZ,TransCode Therapeutics Inc.,NASDAQ
+LAZR,Luminar Technologies Inc.,NASDAQ
+MOBILEYE,Mobileye Global Inc.,NASDAQ
+MBLY,Mobileye Global Inc.,NASDAQ
+INVZ,Innoviz Technologies Ltd.,NASDAQ
+LIDR,AEye Inc.,NASDAQ
+OUST,Ouster Inc.,NYSE
+VLDR,Velodyne Lidar Inc.,NASDAQ
+CDXS,Codexis Inc.,NASDAQ
+TSEM,Tower Semiconductor Ltd.,NASDAQ
+CEVA,CEVA Inc.,NASDAQ
+SMTC,Semtech Corporation,NASDAQ
+DIOD,Diodes Incorporated,NASDAQ
+IXYS,IXYS Corporation,NASDAQ
+POWER,Power Solutions International Inc.,NASDAQ

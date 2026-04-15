@@ -1,0 +1,71 @@
+[project]
+name = "agentic-financial-analysis"
+version = "0.1.0"
+description = "Multi-agent financial analysis system powered by Google ADK and Vertex AI"
+requires-python = ">=3.11"
+dependencies = [
+    # Google AI / ADK
+    "google-adk>=0.5.0",
+    "google-cloud-aiplatform>=1.70.0",
+    "google-auth>=2.35.0",
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "websockets>=13.0",
+    "python-multipart>=0.0.12",
+    # Data collection
+    "yfinance>=0.2.50",
+    "httpx>=0.27.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.3.0",
+    # Data processing
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "matplotlib>=3.9.0",
+    # Schema / config
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "python-dotenv>=1.0.0",
+    # Code execution sandbox
+    "RestrictedPython>=7.2",
+    # Observability
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-exporter-gcp-trace>=1.8.0",
+    # Utilities
+    "aiofiles>=24.1.0",
+    "tenacity>=9.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-httpx>=0.32.0",
+    "httpx>=0.27.0",
+    "ruff>=0.7.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.7.0",
+]

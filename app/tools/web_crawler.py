@@ -45,6 +45,7 @@ import asyncio
 import logging
 import random
 import re
+import xml.etree.ElementTree as ET
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -88,31 +89,43 @@ def _clean_text(html: str) -> str:
 # ── Source-specific parsers ────────────────────────────────────────────────
 
 async def _fetch_reuters(query: str, max_articles: int, client: httpx.AsyncClient) -> list[dict]:
+    """
+    Reuters blocks unauthenticated crawlers (HTTP 401).
+    We use Google News RSS instead, which aggregates Reuters and other
+    reputable outlets and is publicly accessible without authentication.
+    """
     results = []
-    url = f"https://www.reuters.com/search/news?blob={quote_plus(query)}&sortBy=date&dateRange=pastMonth"
+    url = (
+        f"https://news.google.com/rss/search"
+        f"?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
+    )
     await asyncio.sleep(settings.crawl_rate_limit_seconds)
     try:
         resp = await client.get(url, headers=_random_headers(), timeout=15, follow_redirects=True)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
-        articles = soup.select("div.search-result-content") or soup.select("article")
-        for art in articles[:max_articles]:
-            title_el = art.find(["h3", "h2", "a"])
-            title = title_el.get_text(strip=True) if title_el else "Unknown"
-            link_el = art.find("a", href=True)
-            link = link_el["href"] if link_el else ""
-            if link and not link.startswith("http"):
-                link = "https://www.reuters.com" + link
-            date_el = art.find("time") or art.find(class_=re.compile(r"date|time", re.I))
-            date_str = date_el.get("datetime", date_el.get_text(strip=True)) if date_el else ""
-            body_el = art.find("p")
-            body = body_el.get_text(strip=True) if body_el else ""
-            results.append(
-                {"title": title, "url": link, "published_date": date_str[:10],
-                 "body_text": body[:500], "source": "reuters"}
-            )
+        root = ET.fromstring(resp.content)  # bytes avoids encoding declaration issues
+        channel = root.find("channel")
+        if channel is None:
+            return results
+        for item in channel.findall("item")[:max_articles]:
+            title = item.findtext("title", default="Unknown")
+            link = item.findtext("link", default="")
+            pub_date = item.findtext("pubDate", default="")
+            # description may contain HTML — strip it
+            raw_desc = item.findtext("description", default="")
+            body = BeautifulSoup(raw_desc, "lxml").get_text(separator=" ", strip=True)[:500]
+            # Extract source outlet name if present
+            source_el = item.find("source")
+            outlet = source_el.text if source_el is not None else "google_news"
+            results.append({
+                "title": title,
+                "url": link,
+                "published_date": pub_date[:16] if pub_date else "",
+                "body_text": body,
+                "source": outlet,
+            })
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Reuters crawl failed: %s", exc)
+        logger.warning("Google News RSS crawl failed: %s", exc)
     return results
 
 
@@ -144,33 +157,38 @@ async def _fetch_cnbc(query: str, max_articles: int, client: httpx.AsyncClient) 
 
 
 async def _fetch_yahoo_finance(query: str, max_articles: int, client: httpx.AsyncClient) -> list[dict]:
+    """
+    Fetch news from Yahoo Finance via Google News RSS filtered to finance.yahoo.com.
+    The old /search/?q=...&news_count=10 URL returns HTTP 404 as of 2025.
+    """
     results = []
-    url = f"https://finance.yahoo.com/search/?q={quote_plus(query)}&news_count=10"
+    # Scope the Google News RSS query to Yahoo Finance articles
+    scoped_query = f"{query} site:finance.yahoo.com"
+    url = (
+        f"https://news.google.com/rss/search"
+        f"?q={quote_plus(scoped_query)}&hl=en-US&gl=US&ceid=US:en"
+    )
     await asyncio.sleep(settings.crawl_rate_limit_seconds)
     try:
         resp = await client.get(url, headers=_random_headers(), timeout=15, follow_redirects=True)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
-        items = (
-            soup.select("li.js-stream-content")
-            or soup.select("div[data-test='story-item']")
-            or soup.select("article")
-        )
-        for item in items[:max_articles]:
-            title_el = item.find(["h3", "h2", "a"])
-            title = title_el.get_text(strip=True) if title_el else "Unknown"
-            link_el = item.find("a", href=True)
-            link = link_el["href"] if link_el else ""
-            if link and link.startswith("/"):
-                link = "https://finance.yahoo.com" + link
-            date_el = item.find("time")
-            date_str = date_el.get("datetime", "") if date_el else ""
-            body_el = item.find("p")
-            body = body_el.get_text(strip=True) if body_el else ""
-            results.append(
-                {"title": title, "url": link, "published_date": date_str[:10],
-                 "body_text": body[:500], "source": "yahoo_finance"}
-            )
+        root = ET.fromstring(resp.content)
+        channel = root.find("channel")
+        if channel is None:
+            return results
+        for item in channel.findall("item")[:max_articles]:
+            title = item.findtext("title", default="Unknown")
+            link = item.findtext("link", default="")
+            pub_date = item.findtext("pubDate", default="")
+            raw_desc = item.findtext("description", default="")
+            body = BeautifulSoup(raw_desc, "lxml").get_text(separator=" ", strip=True)[:500]
+            results.append({
+                "title": title,
+                "url": link,
+                "published_date": pub_date[:16] if pub_date else "",
+                "body_text": body,
+                "source": "yahoo_finance",
+            })
     except Exception as exc:  # noqa: BLE001
         logger.warning("Yahoo Finance crawl failed: %s", exc)
     return results

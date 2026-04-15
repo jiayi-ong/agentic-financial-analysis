@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agentic Financial Analyst</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <!-- Marked.js for markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+</head>
+<body>
+
+  <!-- ── Header ─────────────────────────────────────────────────── -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="header-title">
+        <span class="logo">📈</span>
+        <div>
+          <h1>Agentic Financial Analyst</h1>
+          <p class="header-subtitle">
+            AI-powered preliminary analysis for technology stocks
+          </p>
+        </div>
+      </div>
+      <div class="connection-badge" id="connectionBadge">
+        <span class="dot"></span> Connecting...
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Ticker Input Bar ───────────────────────────────────────── -->
+  <div class="ticker-bar">
+    <div class="ticker-inner">
+      <label for="tickerInput" class="ticker-label">Stock Ticker or Company Name</label>
+      <div class="ticker-row">
+        <input
+          id="tickerInput"
+          type="text"
+          placeholder="e.g. AAPL, NVDA, Microsoft"
+          maxlength="80"
+          autocomplete="off"
+          autocapitalize="characters"
+        />
+        <input
+          id="queryInput"
+          type="text"
+          placeholder="Optional: focus area (e.g. growth outlook, valuation)"
+          maxlength="200"
+        />
+        <button id="startBtn" class="btn-primary" disabled>Start Analysis</button>
+      </div>
+      <div id="tickerError" class="ticker-error hidden"></div>
+    </div>
+  </div>
+
+  <!-- ── Tab Navigation ────────────────────────────────────────── -->
+  <div class="tabs-nav">
+    <button class="tab-btn active" data-tab="conversation">
+      💬 Analysis
+    </button>
+    <button class="tab-btn" data-tab="steps">
+      🔍 Reasoning Steps
+      <span class="step-badge" id="stepBadge">0</span>
+    </button>
+  </div>
+
+  <!-- ── Main Content ───────────────────────────────────────────── -->
+  <main class="main-content">
+
+    <!-- Tab 1: Conversation -->
+    <section id="tab-conversation" class="tab-panel active">
+      <!-- Live status bar -->
+      <div class="status-bar" id="statusBar">
+        <span class="status-icon">⏳</span>
+        <span id="statusText">Waiting for ticker input...</span>
+      </div>
+
+      <!-- Message history -->
+      <div class="messages-container" id="messagesContainer">
+        <!-- Welcome message -->
+        <div class="message agent-message">
+          <div class="message-avatar">🤖</div>
+          <div class="message-bubble">
+            <p>
+              Welcome to the <strong>Agentic Financial Analyst</strong>. Enter a
+              technology stock ticker above to begin a multi-agent analysis covering:
+            </p>
+            <ul>
+              <li>📊 <strong>Financial performance</strong> — revenue, margins, valuation</li>
+              <li>🌍 <strong>Macro &amp; geopolitical context</strong></li>
+              <li>📰 <strong>News &amp; investor sentiment</strong></li>
+              <li>🏦 <strong>Analyst ratings &amp; SEC filings</strong></li>
+            </ul>
+            <p class="disclaimer-note">
+              ⚠️ For informational purposes only — not financial advice.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Typing indicator -->
+      <div class="typing-indicator hidden" id="typingIndicator">
+        <span></span><span></span><span></span>
+      </div>
+    </section>
+
+    <!-- Tab 2: Reasoning Steps -->
+    <section id="tab-steps" class="tab-panel hidden">
+      <div class="steps-header">
+        <h2>Intermediate Reasoning Steps</h2>
+        <p>Live log of agent actions, tool calls, and intermediate outputs.</p>
+      </div>
+      <div class="steps-container" id="stepsContainer">
+        <p class="steps-empty" id="stepsEmpty">No steps yet. Start an analysis above.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

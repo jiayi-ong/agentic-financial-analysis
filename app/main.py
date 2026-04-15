@@ -18,6 +18,7 @@ from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv(override=False)  # don't overwrite vars already set in the shell
 
+import datetime
 import json
 import logging
 import os
@@ -38,17 +39,31 @@ from app.session.manager import session_manager
 from app.tracing.tracer import init_tracing
 from app.utils.ticker import INVALID_TICKER_MESSAGE, validate_ticker
 
-# ── Logging setup ─────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=getattr(logging, settings.log_level, logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stdout,
-)
-logger = logging.getLogger(__name__)
-
 # ── Static paths ──────────────────────────────────────────────────────────────
 _ROOT = Path(__file__).parent.parent  # repo root
 _FRONTEND = _ROOT / "frontend"
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+# Logs go to stdout (captured by Cloud Run / Docker) AND to a local .txt file.
+# The file is useful for local development; on Cloud Run the filesystem is
+# ephemeral so stdout is the canonical log sink there.
+_LOG_DIR = _ROOT / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+_log_file = _LOG_DIR / f"financial_analyst_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+_log_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+_log_level = getattr(logging, settings.log_level, logging.INFO)
+
+logging.basicConfig(
+    level=_log_level,
+    format=_log_fmt,
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(str(_log_file), encoding="utf-8"),
+    ],
+)
+logger = logging.getLogger(__name__)
+logger.info("Log file: %s", _log_file)
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -101,11 +116,28 @@ _STATIC = _FRONTEND / "static"
 if _STATIC.exists():
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
+# Disable browser caching for all /static/* responses so CSS/JS changes are
+# always picked up immediately during development.
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+
+class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):  # type: ignore[override]
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
+app.add_middleware(NoCacheStaticMiddleware)
+
 
 # ── REST endpoints ────────────────────────────────────────────────────────────
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
-    return FileResponse(str(_FRONTEND / "index.html"))
+    return FileResponse(
+        str(_FRONTEND / "index.html"),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @app.get("/health")
@@ -221,5 +253,7 @@ if __name__ == "__main__":
         host=settings.host,
         port=settings.port,
         reload=True,
+        # Only watch app/ — prevents logs/*.txt from triggering reload loops
+        reload_dirs=[str(_ROOT / "app")],
         log_level=settings.log_level.lower(),
     )

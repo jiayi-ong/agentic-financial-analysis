@@ -37,7 +37,7 @@ from app.config import settings
 from app.schemas.session import SessionEvent
 from app.session.manager import session_manager
 from app.tracing.tracer import init_tracing
-from app.utils.ticker import INVALID_TICKER_MESSAGE, validate_ticker
+from app.utils.ticker import INVALID_TICKER_MESSAGE, validate_ticker_async
 
 # ── Static paths ──────────────────────────────────────────────────────────────
 _ROOT = Path(__file__).parent.parent  # repo root
@@ -200,7 +200,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
         )
 
         # ── Ticker validation ─────────────────────────────────────────────────
-        is_valid, canonical_ticker = validate_ticker(ticker_input)
+        # validate_ticker_async: fast local lookup first, live yfinance fallback
+        # for any ticker not in the local database (covers all US-listed stocks).
+        is_valid, canonical_ticker = await validate_ticker_async(ticker_input)
         if not is_valid or not canonical_ticker:
             await emit(
                 SessionEvent(

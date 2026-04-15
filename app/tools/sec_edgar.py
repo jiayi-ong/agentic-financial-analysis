@@ -119,6 +119,12 @@ async def search_filings(
     results: list[dict[str, Any]] = []
     for form, date, acc in zip(forms, dates, accessions):
         if form.upper() == form_type.upper():
+            # Build a direct link to the filing index on SEC EDGAR
+            acc_nodashes = acc.replace("-", "")
+            cik_int = int(cik)
+            filing_url = (
+                f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_nodashes}/"
+            )
             results.append(
                 {
                     "accession_number": acc,
@@ -126,6 +132,7 @@ async def search_filings(
                     "filed": date,
                     "company": company_name,
                     "cik": cik,
+                    "filing_url": filing_url,
                 }
             )
             if len(results) >= limit:

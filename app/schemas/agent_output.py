@@ -91,8 +91,11 @@ class SpecialistOutput(BaseModel):
         if self.evidence:
             lines.append("\n### Evidence")
             for ev in self.evidence:
-                ref = ev.source_url or ev.filing_identifier or "no direct link"
-                lines.append(f"- [{ev.source_type}] {ev.text[:200]}  (source: {ref})")
+                lines.append(f"- [{ev.source_type}] {ev.text[:200]}")
+                if ev.source_url:
+                    lines.append(f"  CITATION_URL: {ev.source_url}")
+                elif ev.filing_identifier:
+                    lines.append(f"  CITATION_ID: {ev.filing_identifier}")
         return "\n".join(lines)
 
 

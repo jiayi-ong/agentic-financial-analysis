@@ -49,6 +49,7 @@ Example 3 — blocked import (will return error):
 
 from __future__ import annotations
 
+import _strptime  # noqa: F401  # pre-load so RestrictedPython sandbox never needs to import it
 import base64
 import contextvars
 import io
@@ -61,7 +62,11 @@ from contextlib import redirect_stdout
 from typing import Any
 
 from RestrictedPython import compile_restricted, safe_globals
-from RestrictedPython.Guards import guarded_iter_unpack_sequence, safe_builtins
+from RestrictedPython.Guards import (
+    guarded_iter_unpack_sequence,
+    guarded_unpack_sequence,
+    safe_builtins,
+)
 
 
 class _PrintCollector:
@@ -122,6 +127,9 @@ def set_figure_collector(collector: list[str] | None) -> None:
 _ALLOWED_MODULES = {
     "pandas", "numpy", "matplotlib", "matplotlib.pyplot",
     "matplotlib.figure", "matplotlib.axes", "matplotlib.ticker",
+    "matplotlib.dates",          # needed for mdates.DateFormatter / date axes
+    "matplotlib.gridspec",       # occasionally needed for subplot layouts
+    "matplotlib.patches",        # for bar/pie annotations
     "math", "json", "datetime", "statistics", "io", "collections",
     "itertools", "functools", "re", "string",
 }
@@ -185,6 +193,8 @@ def _build_restricted_globals(fig_collector: list[str]) -> dict[str, Any]:
 
     glb["_inplacevar_"] = _inplacevar_
     glb["_iter_unpack_sequence_"] = guarded_iter_unpack_sequence
+    # _unpack_sequence_ is called for tuple-unpacking assignments, e.g. `a, b = pair`
+    glb["_unpack_sequence_"] = guarded_unpack_sequence
 
     return glb
 
@@ -266,11 +276,18 @@ def execute_python(code: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
 
-    # Push captured figures to the orchestrator's per-run collector (if registered)
+    # Push captured figures to the orchestrator's per-run collector (if registered).
+    # Deduplicate against what is already in the collector: if the agent calls
+    # execute_python more than once (e.g., stats then chart) and both calls
+    # happen to produce the same image, we must not add it twice.
     if figures:
         collector = _figure_collector.get()
         if collector is not None:
-            collector.extend(figures)
+            existing_in_collector = set(collector)
+            for fig in figures:
+                if fig not in existing_in_collector:
+                    collector.append(fig)
+                    existing_in_collector.add(fig)
 
     return {
         "stdout": stdout_buf.getvalue(),

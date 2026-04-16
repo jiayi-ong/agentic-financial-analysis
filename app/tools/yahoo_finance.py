@@ -148,6 +148,10 @@ def get_price_history(
     hist = yf.Ticker(ticker.upper()).history(period=period, interval=interval)
     if hist.empty:
         return []
+    # Strip timezone so date strings are clean "YYYY-MM-DD HH:MM:SS" without
+    # offset suffixes — prevents "Mixed timezones" errors in agent chart code.
+    if getattr(hist.index, "tz", None) is not None:
+        hist.index = hist.index.tz_convert("UTC").tz_localize(None)
     hist.index = hist.index.astype(str)
     return [
         {

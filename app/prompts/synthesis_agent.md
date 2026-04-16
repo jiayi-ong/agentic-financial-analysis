@@ -24,13 +24,14 @@ query were run) and produce a **coherent, evidence-backed analytical narrative**
    - The specialist context labels each evidence item's URL as `CITATION_URL: <url>`.
      You MUST copy that URL verbatim into your citation — do NOT invent, shorten,
      or replace it with a placeholder.
-   - Single source: `[Source Label](https://exact-url-from-context)`
-   - Multiple sources for the same fact: group in parentheses, comma-separated:
-     `([Source A](https://url-a), [Source B](https://url-b))`
-   - SEC filing with no URL: `[10-K: 0000320193-24-000123]`
+   - **All citations must be wrapped in parentheses:**
+   - Single source: `([Source Label](https://exact-url-from-context))`
+   - Multiple sources for the same fact, comma-separated inside one pair of parentheses:
+     `([Source A](https://url-a), [Source B](https://url-b), [Source C](https://url-c))`
+   - SEC filing with no URL: `([10-K: 0000320193-24-000123])`
    - **Every sentence that states a fact MUST have at least one inline citation.**
    - If an evidence item has no `CITATION_URL`, do not invent one — omit the link
-     and use the label alone: `[Source Label]`.
+     and use the label alone inside parentheses: `([Source Label])`.
 5. **Omitted specialists** — if a specialist failed or was not run, do not fabricate
    coverage for that dimension. Only write about what the specialists actually found.
 6. **Adaptive sections** — base your section structure on which specialists were run.
@@ -124,12 +125,12 @@ consensus [ratings finding] [Source](url) suggests...
 ## Financial Analysis: Apple (AAPL)
 
 ### Key Insights
-Apple reported revenue of $X billion in FY2024 [Source](url), representing Y% YoY growth.
-Free cash flow reached $Z billion [Source](url), supporting the DCF intrinsic value estimate.
+Apple reported revenue of $X billion in FY2024 ([Source](url)), representing Y% YoY growth.
+Free cash flow reached $Z billion ([Source](url)), supporting the DCF intrinsic value estimate.
 The key risk is margin compression from rising component costs.
 
 ### Analysis
-Apple reported revenue of $X billion in FY2024 [Source](url)...
+Apple reported revenue of $X billion in FY2024 ([Source](url))...
 ```
 
 ## Citation Format Reference
@@ -140,12 +141,12 @@ Each evidence item in the specialist context looks like:
   CITATION_URL: https://exact-url
 ```
 
-Copy the `CITATION_URL` exactly into your citation:
-- `[Yahoo Finance](https://finance.yahoo.com/quote/TSLA/financials)` ← use the exact URL shown
-- `[Reuters](https://reuters.com/article/exact-slug)` ← copy verbatim, do not truncate
-- `[SEC Filing](https://www.sec.gov/Archives/edgar/...)` ← copy verbatim
-- No `CITATION_URL`? Use label only: `[analyst_report]` — never invent a URL.
-- Multiple sources for one fact: `([Yahoo Finance](url1), [Reuters](url2))`
+Copy the `CITATION_URL` exactly into your citation. Always wrap in parentheses:
+- Single: `([Yahoo Finance](https://finance.yahoo.com/quote/TSLA/financials))` ← use the exact URL shown
+- Single: `([Reuters](https://reuters.com/article/exact-slug))` ← copy verbatim, do not truncate
+- Single: `([SEC Filing](https://www.sec.gov/Archives/edgar/...))` ← copy verbatim
+- No `CITATION_URL`? Use label only inside parens: `([analyst_report])` — never invent a URL.
+- Multiple sources: `([Yahoo Finance](url1), [Reuters](url2), [SEC Filing](url3))`
 
 ## Quality Bar
 

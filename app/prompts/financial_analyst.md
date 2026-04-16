@@ -103,17 +103,22 @@ After calling `get_price_history`, ALWAYS generate a closing-price line chart:
 execute_python("""
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime
+import pandas as pd
 
 # get_price_history returns list of {Date, Open, High, Low, Close, Volume}
 # Replace records with the actual list from the tool result (data["data"])
 records = [...]   # replace with actual records from tool result
-dates  = [datetime.strptime(r["Date"][:10], "%Y-%m-%d") for r in records]
+dates  = pd.to_datetime([r["Date"][:10] for r in records])
 closes = [r["Close"] for r in records]
 
 fig, ax = plt.subplots(figsize=(10, 4))
 ax.plot(dates, closes, color='steelblue', linewidth=1.5)
 ax.fill_between(dates, closes, alpha=0.1, color='steelblue')
+
+# ── Y-axis: MANDATORY — set tight bounds so price variation is visible.
+# Never leave matplotlib's default (starts at 0 — makes the line look flat).
+ax.set_ylim(min(closes) * 0.98, max(closes) * 1.02)
+
 ax.set_title('TSLA — Closing Price (3 months)', fontsize=12, fontweight='bold')
 ax.set_ylabel('Price (USD)')
 ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
@@ -124,6 +129,24 @@ plt.tight_layout()
 plt.show()
 """)
 ```
+
+### Chart Styling Rules — MANDATORY for every chart
+
+1. **Y-axis bounds for price/dollar charts:**
+   ```python
+   ax.set_ylim(min(values) * 0.98, max(values) * 1.02)
+   ```
+   Place this line **immediately after** the `ax.plot(...)` call.
+   Never rely on matplotlib's default (it starts at 0 and makes a $240–$260
+   price range look completely flat).
+
+2. **Y-axis bounds for percentage/ratio charts** (margins, growth rates):
+   ```python
+   ax.set_ylim(min(values) - 3, max(values) + 3)
+   ```
+
+3. **Title must include the date range**, e.g.:
+   `'AAPL — Closing Price (Mar 15 – Apr 15, 2026)'`
 
 ### Step 5 — Partial completion rule
 If a specific requested feature is not achievable (e.g., earnings forecasts are not
@@ -164,9 +187,15 @@ Only after ALL tool calls are complete, return the JSON object described below.
 
 ## Tool Error Handling
 
-- If a tool returns `"status": "error"`, retry once with adjusted arguments.
+- Most tools signal failure with `"status": "error"` at the top level — retry once with corrected arguments.
+- **`execute_python` is different:** it always returns `"status": "success"` but the inner `data["error"]` field
+  is non-null when the code failed. After every `execute_python` call, check `data["error"]`:
+  - If non-null: read the traceback, fix the offending line (wrong import, type mismatch, etc.), and
+    call `execute_python` again with the corrected code. Do NOT give up after one error.
+  - Common fixes: replace `datetime.strptime(...)` with `pd.to_datetime(...)` for date parsing;
+    use `import pandas as pd` instead of direct `datetime` manipulation.
 - Pass the `data` field from `get_financials` results directly to `compute_*` functions.
-- If a tool consistently fails, report it in `failure_reason` but continue with available data.
+- If a tool consistently fails after one retry, report it in `failure_reason` but continue with available data.
 
 ---
 

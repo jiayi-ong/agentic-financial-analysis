@@ -40,6 +40,13 @@ class Settings(BaseSettings):
         2,
         description="Max critique-triggered re-run cycles before accepting / abstaining",
     )
+    max_specialist_tool_calls: Annotated[int, Field(ge=1, le=50)] = Field(
+        7,
+        description=(
+            "Max tool calls per specialist per critic cycle. "
+            "Resets automatically when a specialist is re-run after critique feedback."
+        ),
+    )
 
     # ── Observability ─────────────────────────────────────────────────────
     log_level: str = Field("INFO")

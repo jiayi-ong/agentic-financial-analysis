@@ -49,9 +49,11 @@ class SpecialistOutput(BaseModel):
 
     specialist: str = Field(..., description="Agent name (e.g. 'financial_analyst')")
     claims: list[str] = Field(
-        ...,
-        min_length=1,
-        description="Key analytical claims made by this specialist (bullet-style, concise)",
+        default_factory=list,
+        description=(
+            "Key analytical claims made by this specialist (bullet-style, concise). "
+            "Empty when success=False — see failure_reason for the failure detail."
+        ),
     )
     evidence: list[EvidenceSnippet] = Field(
         default_factory=list,

@@ -24,8 +24,10 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
+import google.genai as genai
 from google.adk.agents import LlmAgent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -85,31 +87,37 @@ _JSON_COERCE_INSTRUCTION = (
     "Start your response with { and end with }. Output ONLY the JSON."
 )
 
-# ── Intent classification — keyword sets ─────────────────────────────────────
-# Used by the deterministic keyword classifier in _classify_intent().
-# Each set is a collection of lowercase substrings; a match means the
-# corresponding specialist is relevant.
+# ── Intent router — LLM-based with keyword fallback ──────────────────────────
+# Primary path: a lightweight Gemini call with few-shot examples from
+# app/prompts/intent_router.md selects the minimum needed specialist set.
+# Fallback (on any error): deterministic keyword matching below.
 
-_COMPREHENSIVE_KEYWORDS: frozenset[str] = frozenset({
-    "comprehensive", "full", "overview", "analysis", "analyse", "analyze",
-    "tell me about", "everything", "report", "all aspects", "deep dive",
-    "deep-dive", "complete", "holistic",
+_ROUTER_PROMPT: str = (Path(__file__).parent.parent / "prompts" / "intent_router.md").read_text(encoding="utf-8")
+
+_ALL_SPECIALISTS: tuple[str, ...] = (
+    "financial_analyst", "macro_analyst", "sentiment_analyst", "ratings_analyst"
+)
+
+# Keyword fallback sets ── only used when the LLM router fails.
+_FB_COMPREHENSIVE: frozenset[str] = frozenset({
+    "comprehensive", "full", "overview", "tell me about", "everything",
+    "report", "all aspects", "deep dive", "deep-dive", "complete", "holistic",
+    "financial health", "investment case", "growth outlook",
 })
-
-_SPECIALIST_KEYWORDS: dict[str, frozenset[str]] = {
+_FB_SPECIALIST: dict[str, frozenset[str]] = {
     "financial_analyst": frozenset({
         "revenue", "earnings", "margin", "dcf", "valuation", "p/e", "pe ratio",
         "cash flow", "cashflow", "balance sheet", "chart", "graph", "plot",
-        "price", "financial", "metric", "growth", "profit", "loss", "income",
-        "ebitda", "return", "ratio", "dividend", "free cash flow", "fcf",
-        "gross margin", "operating", "net income", "eps", "shares",
+        "price", "metric", "growth", "profit", "loss", "income", "ebitda",
+        "return", "ratio", "dividend", "free cash flow", "fcf", "gross margin",
+        "operating", "net income", "eps", "shares", "volatility", "trend",
+        "technical", "stock data", "price data", "price history",
     }),
     "macro_analyst": frozenset({
         "macro", "economy", "economic", "interest rate", "fed",
         "federal reserve", "inflation", "gdp", "tariff", "trade", "geopolit",
         "supply chain", "regulation", "antitrust", "monetary", "recession",
         "china", "global", "central bank", "rate hike", "rate cut", "policy",
-        "sector",
     }),
     "sentiment_analyst": frozenset({
         "news", "sentiment", "market sentiment", "media", "coverage",
@@ -194,7 +202,7 @@ class FinancialOrchestrator:
                           f"Starting financial analysis for **{ticker}**..."))
 
         # ── Step 0: Classify user intent ──────────────────────────────────────
-        selected_names = self._classify_intent(user_query, ticker)
+        selected_names = await self._classify_intent(user_query, ticker)
         label = ", ".join(selected_names)
         await emit(_event(
             "agent_start", "orchestrator",
@@ -223,6 +231,28 @@ class FinancialOrchestrator:
             await emit(_event("agent_done", "orchestrator",
                               f"Some specialists failed and will be omitted: {names}"))
 
+        # Short-circuit: if every selected specialist failed there is nothing to
+        # synthesise — skip the LLM pipeline and return a brief canned message.
+        if all(not o.success for o in specialist_outputs.values()):
+            msg = (
+                f"Analysis for **{ticker}** could not be completed — "
+                "all specialist agents reported failures for this request. "
+                "Please try a different query or check back later."
+                f"\n\n---\n{DISCLAIMER}"
+            )
+            thinking_time_seconds = round(
+                (datetime.utcnow() - _start_time).total_seconds(), 1
+            )
+            await emit(_event(
+                "final_output", "orchestrator", msg,
+                payload={
+                    "narrative": msg,
+                    "figures": [],
+                    "thinking_time_seconds": thinking_time_seconds,
+                },
+            ))
+            return msg
+
         # ── Step 2: Synthesise ─────────────────────────────────────────────────
         synthesis = await self._synthesise(
             specialist_outputs=specialist_outputs,
@@ -234,6 +264,7 @@ class FinancialOrchestrator:
 
         # ── Step 3: Critique → triage loop ────────────────────────────────────
         final_synthesis = synthesis
+        critique: CritiqueOutput | None = None
         for attempt in range(settings.max_critique_retries + 1):
             await emit(_event("critique_start", "critique_agent",
                               f"Running quality critique (attempt {attempt + 1} of "
@@ -243,6 +274,7 @@ class FinancialOrchestrator:
                 synthesis=final_synthesis,
                 session_id=session_id,
                 emit=emit,
+                user_query=user_query,
             )
 
             await emit(_event(
@@ -256,22 +288,9 @@ class FinancialOrchestrator:
                 break  # Synthesis accepted
 
             if attempt == settings.max_critique_retries:
-                # Max retries exhausted
-                if critique.overall_severity == "high":
-                    thinking_time_seconds = round(
-                        (datetime.utcnow() - _start_time).total_seconds(), 1
-                    )
-                    abstain_text = self._format_abstain(ticker, critique)
-                    await emit(_event(
-                        "abstain", "orchestrator", abstain_text,
-                        payload={
-                            "narrative": abstain_text,
-                            "figures": all_figures,
-                            "thinking_time_seconds": thinking_time_seconds,
-                        },
-                    ))
-                    return abstain_text
-                break  # Accept even with medium/low issues after max retries
+                # Max retries exhausted — fall through with best result so far.
+                # The critique issues will be appended as warnings in the output.
+                break
 
             # ── Targeted re-run ───────────────────────────────────────────────
             affected = [
@@ -306,7 +325,8 @@ class FinancialOrchestrator:
             )
 
         # ── Step 4: Format and emit final output ──────────────────────────────
-        narrative = self._format_final(ticker, final_synthesis)
+        unresolved = critique if (critique and not critique.passed) else None
+        narrative = self._format_final(ticker, final_synthesis, specialist_outputs, unresolved)
         thinking_time_seconds = round(
             (datetime.utcnow() - _start_time).total_seconds(), 1
         )
@@ -324,45 +344,73 @@ class FinancialOrchestrator:
     # Intent classification
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _classify_intent(self, user_query: str, ticker: str) -> list[str]:
+    async def _classify_intent(self, user_query: str, ticker: str) -> list[str]:
         """
-        Deterministic keyword-based classifier for selecting which specialist
-        agents are relevant for this query.  No network calls, never fails.
+        LLM-based intent classifier with keyword fallback.
 
-        Selection rules (evaluated in order):
-        1. If the query contains any "comprehensive" keyword → all 4 specialists.
-        2. Match each specialist's keyword set against the lowercased query.
-        3. financial_analyst is added unless the query is *exclusively* about
-           news/sentiment or analyst ratings/filings.
-        4. If nothing matched, fall back to all 4 specialists.
+        Uses a lightweight Gemini call (temperature=0) with few-shot examples
+        from app/prompts/intent_router.md to select the minimum specialist set.
+        Falls back to keyword matching if the LLM call fails.
+        """
+        try:
+            client = genai.Client(
+                vertexai=True,
+                project=settings.google_cloud_project,
+                location=settings.google_cloud_location,
+            )
+            prompt = f"Query: \"{user_query}\"\nAnswer:"
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=settings.gemini_model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=_ROUTER_PROMPT,
+                    temperature=0,
+                    max_output_tokens=64,
+                ),
+            )
+            raw = (response.text or "").strip()
+            # Parse JSON array e.g. ["financial_analyst", "macro_analyst"]
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                valid = [s for s in parsed if s in self._specialists]
+                if valid:
+                    logger.info("Intent classification (LLM) for '%s': %s", ticker, valid)
+                    return [n for n in _ALL_SPECIALISTS if n in valid]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM intent router failed (%s) — falling back to keywords.", exc)
+
+        return self._classify_intent_keywords(user_query, ticker)
+
+    def _classify_intent_keywords(self, user_query: str, ticker: str) -> list[str]:
+        """
+        Deterministic keyword fallback classifier.  Never fails.
+
+        Selection rules (in order):
+        1. Comprehensive / general query → all 4 specialists.
+        2. Keyword matching per specialist.
+        3. financial_analyst added unless query is exclusively sentiment/ratings.
+        4. Nothing matched → all 4 specialists.
         """
         q = user_query.lower()
 
-        # Rule 1: comprehensive / general query
-        if any(kw in q for kw in _COMPREHENSIVE_KEYWORDS):
-            logger.info("Intent classification for '%s': all specialists (comprehensive query)", ticker)
+        if any(kw in q for kw in _FB_COMPREHENSIVE):
+            logger.info("Intent classification (keywords) for '%s': all specialists", ticker)
             return list(self._specialists.keys())
 
-        # Rule 2: keyword matching per specialist
         selected: set[str] = {
             name
-            for name, keywords in _SPECIALIST_KEYWORDS.items()
+            for name, keywords in _FB_SPECIALIST.items()
             if any(kw in q for kw in keywords)
         }
-
-        # Rule 3: always include financial_analyst unless query is ONLY about
-        # news/sentiment or analyst ratings (these are self-contained requests).
         only_non_financial = selected.issubset({"sentiment_analyst", "ratings_analyst"})
         if not only_non_financial:
             selected.add("financial_analyst")
-
-        # Rule 4: fallback to all if nothing matched
         if not selected:
             selected = set(self._specialists.keys())
 
-        # Preserve canonical insertion order from self._specialists
         result = [name for name in self._specialists if name in selected]
-        logger.info("Intent classification for '%s': %s", ticker, result)
+        logger.info("Intent classification (keywords) for '%s': %s", ticker, result)
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -411,7 +459,9 @@ class FinancialOrchestrator:
                 payload={
                     "success": output.success,
                     "confidence": output.confidence,
-                    "claims": output.claims,
+                    # Suppress claims for failed specialists — failure_reason is
+                    # the relevant signal; claims would only duplicate it.
+                    "claims": output.claims if output.success else [],
                     "evidence": [
                         json.loads(e.model_dump_json()) for e in output.evidence
                     ],
@@ -487,8 +537,17 @@ class FinancialOrchestrator:
         synthesis: SynthesisOutput,
         session_id: str,
         emit: Callable[[SessionEvent], Awaitable[None]],
+        user_query: str = "",
     ) -> CritiqueOutput:
+        today_str = datetime.utcnow().strftime("%Y-%m-%d")
         context = (
+            f"Today's date (UTC): {today_str}\n"
+            "Use this date as the ground truth when evaluating recency and "
+            "when deciding whether any date in the synthesis is in the future.\n\n"
+        )
+        if user_query:
+            context += f"Original user query: {user_query}\n\n"
+        context += (
             "Please critique the following synthesis:\n\n"
             + synthesis.narrative
             + "\n\nKey hypothesis: "
@@ -622,6 +681,19 @@ class FinancialOrchestrator:
                         tool_history.append(entry)
                         if call_id:
                             _pending_calls[call_id] = entry
+                        # Server-side log for debugging: tool name + key args
+                        if _tool_name == "execute_python":
+                            code_snippet = str(_call_args.get("code", ""))[:500]
+                            logger.info(
+                                "[%s] tool_call execute_python — code (first 500 chars):\n%s",
+                                emit_label or agent.name, code_snippet,
+                            )
+                        else:
+                            logger.info(
+                                "[%s] tool_call %s — args: %s",
+                                emit_label or agent.name, _tool_name,
+                                json.dumps(_call_args)[:300],
+                            )
                         # Emit every function call with its arguments
                         if emit and emit_label and _tool_name:
                             await emit(_event(
@@ -633,6 +705,7 @@ class FinancialOrchestrator:
                     fr = getattr(part, "function_response", None)
                     if fr:
                         call_id = getattr(fr, "id", None) or getattr(fr, "name", "")
+                        fr_name = getattr(fr, "name", "") or ""
                         matched = _pending_calls.get(call_id)
                         if matched:
                             raw_result = getattr(fr, "response", None)
@@ -644,6 +717,40 @@ class FinancialOrchestrator:
                             ):
                                 raw_result = str(raw_result)
                             matched["result"] = raw_result
+                        # ── Inline figure extraction from execute_python responses ──
+                        # This is more robust than the finally-block scan because
+                        # it fires immediately when ADK emits the response event,
+                        # independent of ID matching or ContextVar propagation.
+                        if fr_name == "execute_python":
+                            fr_response = getattr(fr, "response", None)
+                            if fr_response is not None:
+                                if hasattr(fr_response, "model_dump"):
+                                    fr_response = fr_response.model_dump()
+                                if isinstance(fr_response, dict):
+                                    inline_figs = (fr_response.get("data") or {}).get("figures") or []
+                                    inline_err  = (fr_response.get("data") or {}).get("error")
+                                    inline_out  = (fr_response.get("data") or {}).get("stdout", "")
+                                    # Log stdout and error for debugging (Issue 3)
+                                    if inline_out:
+                                        logger.info(
+                                            "[%s] execute_python stdout: %s",
+                                            emit_label or agent.name, inline_out[:300],
+                                        )
+                                    if inline_err:
+                                        logger.warning(
+                                            "[%s] execute_python error:\n%s",
+                                            emit_label or agent.name, inline_err[:800],
+                                        )
+                                    existing_figs = set(figures)
+                                    for fig in inline_figs:
+                                        if fig not in existing_figs:
+                                            figures.append(fig)
+                                            existing_figs.add(fig)
+                                    if inline_figs:
+                                        logger.info(
+                                            "[%s] execute_python yielded %d figure(s) (inline capture).",
+                                            emit_label or agent.name, len(inline_figs),
+                                        )
 
                 # Collect final text response
                 if hasattr(event, "is_final_response") and event.is_final_response():
@@ -711,9 +818,28 @@ class FinancialOrchestrator:
                 logger.info(
                     "financial_analyst produced no figures — sending chart coercion."
                 )
+                # Include the last execute_python error (if any) so the agent
+                # has in-context feedback about why the previous attempt failed.
+                last_exec_error: str | None = None
+                for entry in reversed(tool_history):
+                    if entry.get("name") == "execute_python":
+                        result = entry.get("result") or {}
+                        err = (result.get("data") or {}).get("error")
+                        if err:
+                            last_exec_error = str(err)[:600]
+                        break
+                coerce_text = _CHART_COERCE_INSTRUCTION
+                if last_exec_error:
+                    coerce_text = (
+                        f"Your previous execute_python call failed with this error:\n\n"
+                        f"```\n{last_exec_error}\n```\n\n"
+                        + coerce_text
+                        + " Fix the error shown above before retrying — "
+                        "e.g. use `pd.to_datetime(...)` instead of `datetime.strptime(...)`."
+                    )
                 chart_msg = genai_types.Content(
                     role="user",
-                    parts=[genai_types.Part(text=_CHART_COERCE_INSTRUCTION)],
+                    parts=[genai_types.Part(text=coerce_text)],
                 )
                 async for event in runner.run_async(
                     user_id="orchestrator",
@@ -737,6 +863,18 @@ class FinancialOrchestrator:
                                 ))
 
         finally:
+            # Fallback figure extraction: scan tool_history for execute_python
+            # results in case the ContextVar didn't propagate to the tool's
+            # execution thread (e.g. when ADK uses run_in_executor without
+            # explicit context copy).  De-duplicate against existing figures.
+            existing = set(figures)
+            for entry in tool_history:
+                if entry.get("name") == "execute_python":
+                    data = (entry.get("result") or {}).get("data") or {}
+                    for fig in (data.get("figures") or []):
+                        if fig not in existing:
+                            figures.append(fig)
+                            existing.add(fig)
             # Always clear the collector so it doesn't leak to subsequent runs.
             # This runs AFTER all coercions so execute_python calls inside any
             # coercion still find a live collector.
@@ -785,36 +923,50 @@ class FinancialOrchestrator:
     # ─────────────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _format_final(ticker: str, synthesis: SynthesisOutput) -> str:
+    def _format_final(
+        ticker: str,
+        synthesis: SynthesisOutput,
+        specialist_outputs: dict[str, SpecialistOutput] | None = None,
+        unresolved_critique: CritiqueOutput | None = None,
+    ) -> str:
+        # Compute data gaps deterministically: only specialists that were
+        # selected, ran, but returned success=False.  Never list specialists
+        # that were intentionally excluded from this query's scope.
         omitted_note = ""
-        if synthesis.omitted_specialists:
-            names = ", ".join(synthesis.omitted_specialists)
-            omitted_note = (
-                f"\n\n### Data Gaps\n"
-                f"The following specialist analyses could not be completed and were "
-                f"excluded from this report: **{names}**."
+        if specialist_outputs:
+            failed_names = [
+                name for name, out in specialist_outputs.items() if not out.success
+            ]
+            if failed_names:
+                names = ", ".join(failed_names)
+                omitted_note = (
+                    f"\n\n### Data Gaps\n"
+                    f"The following specialist analyses could not be completed and were "
+                    f"excluded from this report: **{names}**."
+                )
+
+        quality_warning = ""
+        if unresolved_critique and unresolved_critique.issues:
+            sev = unresolved_critique.overall_severity.upper()
+            issue_lines = "\n".join(
+                f"- **[{i.severity.upper()}]** {i.tag}: {i.quote[:120]}"
+                + ("…" if len(i.quote) > 120 else "")
+                for i in unresolved_critique.issues[:5]
+            )
+            quality_warning = (
+                f"\n\n### ⚠️ Quality Warnings ({sev})\n"
+                "This result reached the maximum number of revision attempts. "
+                "The following concerns were not fully resolved:\n\n"
+                + issue_lines
             )
 
         return (
             synthesis.narrative
             + omitted_note
+            + quality_warning
             + f"\n\n---\n{DISCLAIMER}"
         )
 
-    @staticmethod
-    def _format_abstain(ticker: str, critique: CritiqueOutput) -> str:
-        issue_list = "\n".join(
-            f"- [{issue.severity.upper()}] {issue.tag}: {issue.quote[:120]}..."
-            for issue in critique.issues[:5]
-        )
-        return (
-            f"## Analysis: {ticker} — Incomplete\n\n"
-            "The system was unable to produce a high-confidence analysis within "
-            "the allowed number of attempts. The following issues were identified:\n\n"
-            + issue_list
-            + "\n\nPlease try again later or consult primary sources directly."
-            + f"\n\n---\n{DISCLAIMER}"
-        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

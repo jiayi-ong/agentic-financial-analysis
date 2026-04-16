@@ -67,6 +67,12 @@ _CHART_COERCE_INSTRUCTION = (
     "no placeholder data. Call execute_python RIGHT NOW."
 )
 
+_TOOL_CAP_INSTRUCTION = (
+    "You have reached the maximum number of tool calls allowed for this run. "
+    "Do NOT call any more tools. Using only the data you have already collected, "
+    "produce your final structured output as a valid JSON object RIGHT NOW."
+)
+
 _JSON_COERCE_INSTRUCTION = (
     "Your previous response was not in the required JSON format. "
     "You MUST now output ONLY a valid JSON object — no prose, no markdown fences, "
@@ -326,10 +332,19 @@ class FinancialOrchestrator:
 
         # ── Step 4: Format and emit final output ──────────────────────────────
         unresolved = critique if (critique and not critique.passed) else None
-        narrative = self._format_final(ticker, final_synthesis, specialist_outputs, unresolved)
+        logger.info("Formatting final output for %s", ticker)
+        try:
+            narrative = self._format_final(
+                ticker, final_synthesis, specialist_outputs, unresolved
+            )
+        except Exception:
+            logger.exception("_format_final failed — falling back to raw narrative")
+            narrative = (final_synthesis.narrative or "") + f"\n\n---\n{DISCLAIMER}"
+
         thinking_time_seconds = round(
             (datetime.utcnow() - _start_time).total_seconds(), 1
         )
+        logger.info("Emitting final_output for %s (%.1fs)", ticker, thinking_time_seconds)
         await emit(_event(
             "final_output", "orchestrator", narrative,
             payload={
@@ -338,6 +353,7 @@ class FinancialOrchestrator:
                 "thinking_time_seconds": thinking_time_seconds,
             },
         ))
+        logger.info("final_output emitted for %s", ticker)
         return narrative
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -662,6 +678,8 @@ class FinancialOrchestrator:
         tool_history: list[dict] = []
         _pending_calls: dict[str, dict] = {}
         raw_text = ""
+        tool_call_count = 0
+        cap_reached = False
 
         try:
             # ── Main agent run ────────────────────────────────────────────────
@@ -702,6 +720,9 @@ class FinancialOrchestrator:
                                 tool_name=_tool_name,
                                 payload={"tool_name": _tool_name, "args": _call_args},
                             ))
+                        tool_call_count += 1
+                        if tool_call_count >= settings.max_specialist_tool_calls:
+                            cap_reached = True
                     fr = getattr(part, "function_response", None)
                     if fr:
                         call_id = getattr(fr, "id", None) or getattr(fr, "name", "")
@@ -769,7 +790,42 @@ class FinancialOrchestrator:
                             if t:
                                 text_parts.append(t)
 
+                if cap_reached:
+                    break  # Stop consuming ADK events; coercion will follow
+
             raw_text = "".join(text_parts)
+
+            # ── Tool cap coercion ─────────────────────────────────────────────
+            # If the cap was reached the agent may not have produced its final
+            # text response yet.  Ask it to output now based on collected data.
+            if cap_reached:
+                logger.warning(
+                    "Agent '%s' hit tool-call cap (%d). Sending cap coercion.",
+                    agent.name, settings.max_specialist_tool_calls,
+                )
+                cap_msg = genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=_TOOL_CAP_INSTRUCTION)],
+                )
+                cap_parts: list[str] = []
+                async for event in runner.run_async(
+                    user_id="orchestrator", session_id=run_id, new_message=cap_msg,
+                ):
+                    if hasattr(event, "is_final_response") and event.is_final_response():
+                        content = getattr(event, "content", None)
+                        if content:
+                            for part in getattr(content, "parts", []):
+                                t = getattr(part, "text", None)
+                                if t:
+                                    cap_parts.append(t)
+                    elif hasattr(event, "content") and event.content:
+                        if getattr(event.content, "role", "") in ("model", "assistant"):
+                            for part in getattr(event.content, "parts", []):
+                                t = getattr(part, "text", None)
+                                if t:
+                                    cap_parts.append(t)
+                if cap_parts:
+                    raw_text = "".join(cap_parts)
 
             # ── JSON coercion follow-up ───────────────────────────────────────
             # If the agent returned prose or nothing instead of JSON, continue

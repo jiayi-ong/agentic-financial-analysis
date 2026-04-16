@@ -1,0 +1,5 @@
+----- STATEMENT ON THE USE OF GENERATIVE AI -----
+
+The codebase was generated with the assistance of Claude Code, under my close supervision and iterative guidance to achieve full functional completeness. I conducted comprehensive review and testing of all outputs.
+
+The work was done over several sessions. The complete session logs detailing the iterative development process can be found in the "claude-sessions" folder of the repository. The CLAUDE.md file that provides the base context for every session is also included.

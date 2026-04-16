@@ -27,6 +27,7 @@ Live URL: https://financial-analyst-730572317246.us-central1.run.app
 The higher the complexity of the analysis request, the more data sources, specialist agents and tools will be engaged, and the higher the waiting time.
 
 **Low Complexity (Direct, Explicit)**
+
 Analyze Apple (AAPL) using recent stock price data.
 Retrieve the last 30 days of daily price data
 Calculate the average closing price and percentage change over this period
@@ -34,9 +35,11 @@ Identify the highest and lowest prices
 Provide a brief summary of the stock’s short-term trend
 
 **Moderate Complexity (Indirect, Implicit)**
+
 I’m considering whether Tesla (TSLA) is worth getting into right now. Can you look into how it’s been doing and whether anything important might influence its near-term outlook?
 
 **High Complexity (Indirect, Implicit, Large Scope)**
+
 I’m thinking about investing in NVIDIA (NVDA) but want a well-rounded understanding before making a decision. Can you dig into everything that might matter and help me figure out whether it’s a good opportunity right now?
 
 ---

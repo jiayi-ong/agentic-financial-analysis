@@ -1,7 +1,7 @@
 # Agentic Financial Analyst
 
 A production-grade multi-agent system that performs preliminary financial
-analysis of a single technology stock.  The system collects data from multiple
+analysis of a single stock.  The system collects data from multiple
 sources, applies quantitative and qualitative analysis, critiques its own output,
 and delivers an evidence-backed analytical hypothesis through a real-time web UI.
 
@@ -134,6 +134,7 @@ Open `http://localhost:8080` in your browser.
 | `GOOGLE_APPLICATION_CREDENTIALS` | *(optional)* | Path to service account JSON |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model ID for all agents |
 | `MAX_CRITIQUE_RETRIES` | `2` | Max re-run cycles before accepting/abstaining |
+| `MAX_SPECIALIST_TOOL_CALLS` | `7` | Max tool calls per specialist per critic cycle; resets on re-run |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 | `ENABLE_CLOUD_TRACE` | `false` | Export OTel spans to Google Cloud Trace |
 | `CRAWL_RATE_LIMIT_SECONDS` | `1.0` | Delay between outbound crawl requests |
@@ -179,11 +180,59 @@ gcloud run deploy financial-analyst \
   --region us-central1 --allow-unauthenticated --memory 2Gi --timeout 600
 ```
 
-Set production environment variables via:
+### Environment variables on Cloud Run
+
+**How authentication works:** Cloud Run automatically injects credentials for the
+attached service account.  No `GOOGLE_APPLICATION_CREDENTIALS` file is needed at
+runtime — omit it entirely.
+
+**Two ways to set env vars:**
+
+1. **`cloudbuild.yaml` `--set-env-vars`** — applied automatically on every Cloud
+   Build deploy.  Currently sets:
+   `ENABLE_CLOUD_TRACE`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GEMINI_MODEL`.
+
+2. **`gcloud run services update`** — one-time or out-of-band updates that persist
+   across future deploys (Cloud Run stores them as service-level overrides):
+
 ```bash
 gcloud run services update financial-analyst \
   --region us-central1 \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=YOUR_PROJECT,GEMINI_MODEL=gemini-2.0-flash,ENABLE_CLOUD_TRACE=true,SEC_USER_AGENT=FinancialAnalyst admin@example.com"
+  --set-env-vars "\
+GOOGLE_CLOUD_PROJECT=YOUR_PROJECT,\
+GEMINI_MODEL=gemini-2.0-flash,\
+ENABLE_CLOUD_TRACE=true,\
+SEC_USER_AGENT=AgenticFinancialAnalysis your@email.com,\
+CORS_ORIGINS=https://YOUR_SERVICE_URL.run.app,\
+MAX_SPECIALIST_TOOL_CALLS=7"
+```
+
+**Production vars to set manually** (not in `cloudbuild.yaml`):
+
+| Variable | Why |
+|---|---|
+| `SEC_USER_AGENT` | Replace `admin@example.com` with a real contact email per SEC EDGAR policy |
+| `CORS_ORIGINS` | Add the Cloud Run service URL; defaults to `localhost` only |
+| `MAX_SPECIALIST_TOOL_CALLS` | Optional — cap specialist tool calls per cycle (default: 7) |
+
+**If future data-source tools require API keys**, store them in Secret Manager —
+never embed secrets in `cloudbuild.yaml` or container images:
+
+```bash
+# 1. Create the secret
+echo -n "my-api-key" | gcloud secrets create MY_API_KEY --data-file=-
+
+# 2. Grant the Cloud Run service account read access
+gcloud secrets add-iam-policy-binding MY_API_KEY \
+  --member="serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+
+# 3. Mount it as an env var in cloudbuild.yaml — add to the deploy step:
+#   --set-secrets "MY_API_KEY=MY_API_KEY:latest"
+# Or inject at runtime:
+gcloud run services update financial-analyst \
+  --region us-central1 \
+  --set-secrets "MY_API_KEY=MY_API_KEY:latest"
 ```
 
 ---

@@ -41,7 +41,7 @@ steps:
       - --cpu
       - "2"
       - --timeout
-      - "600"
+      - "1200"
       - --concurrency
       - "10"
       - --min-instances
@@ -57,7 +57,7 @@ substitutions:
   _REPO: agentic-financial-analysis
   _IMAGE: financial-analyst
   _SERVICE: financial-analyst
-  _GEMINI_MODEL: gemini-2.0-flash
+  _GEMINI_MODEL: gemini-2.5-flash-lite
   _TAG: latest          # overridden to $SHORT_SHA by a Cloud Build trigger
 
 options:

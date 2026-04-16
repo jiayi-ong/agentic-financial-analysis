@@ -18,6 +18,7 @@ from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv(override=False)  # don't overwrite vars already set in the shell
 
+import asyncio
 import datetime
 import json
 import logging
@@ -221,12 +222,31 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
         )
 
         # ── Run the analysis pipeline ─────────────────────────────────────────
-        await orchestrator.run(
-            ticker=canonical_ticker,
-            user_query=user_query,
-            session_id=session.session_id,
-            emit=emit,
-        )
+        # A background task sends keepalive pings every 20 s to prevent the
+        # Google Cloud Load Balancer from closing idle WebSocket connections
+        # during long LLM calls (critique, synthesis, etc.).
+        async def _keepalive() -> None:
+            while True:
+                await asyncio.sleep(20)
+                try:
+                    await websocket.send_text('{"event_type":"keepalive"}')
+                except Exception:  # noqa: BLE001
+                    return
+
+        _ka_task = asyncio.create_task(_keepalive())
+        try:
+            await orchestrator.run(
+                ticker=canonical_ticker,
+                user_query=user_query,
+                session_id=session.session_id,
+                emit=emit,
+            )
+        finally:
+            _ka_task.cancel()
+            try:
+                await _ka_task
+            except asyncio.CancelledError:
+                pass
 
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected: session_id=%s", session_id)

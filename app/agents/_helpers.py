@@ -7,12 +7,37 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.models.llm_response import LlmResponse
 
 from app.schemas.agent_output import SpecialistOutput, SynthesisOutput
 from app.schemas.critique import CritiqueOutput
 
 logger = logging.getLogger(__name__)
+
+
+def strip_tool_namespace_callback(
+    callback_context: CallbackContext,
+    llm_response: LlmResponse,
+) -> Optional[LlmResponse]:
+    """Strip 'default_api.' namespace prefix from tool call names.
+
+    Newer Gemini model versions (e.g. gemini-2.5-flash-lite) emit function
+    calls with a 'default_api.' prefix on the tool name, e.g.
+    'default_api.get_price_history'.  ADK's tool registry stores tools by
+    their plain name, so the lookup fails with 'Tool not found'.  This
+    after_model_callback strips the prefix in-place before ADK processes
+    the response, so the lookup succeeds without any other changes.
+    """
+    if llm_response.content and llm_response.content.parts:
+        for part in llm_response.content.parts:
+            fc = getattr(part, "function_call", None)
+            if fc is not None and getattr(fc, "name", None):
+                if fc.name.startswith("default_api."):
+                    fc.name = fc.name[len("default_api."):]
+    return None  # return None → ADK uses the (now-mutated) original response
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
@@ -131,7 +156,7 @@ def parse_specialist_output(text: str, specialist_name: str) -> SpecialistOutput
         )
         return SpecialistOutput(
             specialist=specialist_name,
-            claims=["Specialist returned no output."],
+            claims=[],
             evidence=[],
             confidence=0.0,
             success=False,
@@ -142,11 +167,6 @@ def parse_specialist_output(text: str, specialist_name: str) -> SpecialistOutput
         raw = _sanitize_json_strings(raw)
         data = json.loads(raw)
         data.setdefault("specialist", specialist_name)
-        # If the agent correctly returned success=false with a failure_reason but left
-        # claims empty, populate it from failure_reason so Pydantic's min-length (≥1)
-        # constraint is satisfied without discarding the agent's own diagnosis.
-        if not data.get("claims") and data.get("failure_reason"):
-            data["claims"] = [str(data["failure_reason"])[:300]]
         return SpecialistOutput.model_validate(data)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -155,7 +175,7 @@ def parse_specialist_output(text: str, specialist_name: str) -> SpecialistOutput
         )
         return SpecialistOutput(
             specialist=specialist_name,
-            claims=["Output parsing failed — raw response could not be decoded as SpecialistOutput."],
+            claims=[],
             evidence=[],
             confidence=0.0,
             success=False,

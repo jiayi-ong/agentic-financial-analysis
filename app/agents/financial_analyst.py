@@ -16,7 +16,7 @@ from google.adk.agents import LlmAgent
 from google.adk.tools import FunctionTool
 from google.genai import types as genai_types
 
-from app.agents._helpers import load_prompt
+from app.agents._helpers import load_prompt, strip_tool_namespace_callback
 from app.config import settings
 from app.tools.code_executor import execute_python
 from app.tools.financial_metrics import (
@@ -50,6 +50,7 @@ def create_financial_analyst() -> LlmAgent:
         generate_content_config=genai_types.GenerateContentConfig(
             thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
         ),
+        after_model_callback=strip_tool_namespace_callback,
         tools=[
             FunctionTool(func=get_stock_info),
             FunctionTool(func=get_price_history),

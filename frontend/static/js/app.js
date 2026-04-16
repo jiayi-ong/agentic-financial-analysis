@@ -196,6 +196,9 @@ const EVENT_ICONS = {
 function routeEvent(event) {
   const { event_type, agent_name, message, payload, timestamp } = event;
 
+  // Server heartbeat — no message/agent_name/timestamp, so skip addStep entirely
+  if (event_type === 'keepalive') return;
+
   // Always add to steps tab — pass full payload for rich rendering
   addStep(event_type, agent_name, message, timestamp, payload);
 
@@ -253,6 +256,9 @@ function routeEvent(event) {
       setStatus('🚨', message);
       addAgentMessage(`**Error:** ${message}`, null);
       break;
+
+    case 'keepalive':
+      break; // Server heartbeat — no UI update needed
 
     default:
       setStatus('ℹ️', message);
